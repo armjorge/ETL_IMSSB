@@ -1,0 +1,33 @@
+# Core dependencies for IMSS Bienestar ETL Pipeline
+pandas>=2.0.0
+numpy>=1.24.0
+openpyxl>=3.1.0
+xlsxwriter>=3.0.0
+
+# Configuration and utilities
+pyyaml>=6.0
+python-dotenv>=1.0.0
+
+# Logging and monitoring
+colorlog>=6.7.0
+
+# Data validation and quality
+jsonschema>=4.0.0
+
+# Optional: Database connectivity (uncomment if needed)
+# sqlalchemy>=2.0.0
+# psycopg2-binary>=2.9.0  # PostgreSQL
+# pymongo>=4.0.0          # MongoDB
+# mysql-connector-python>=8.0.0  # MySQL
+
+# Optional: Advanced data processing (uncomment if needed)
+# dask>=2023.0.0          # For large datasets
+# pyarrow>=12.0.0         # Parquet support
+# fastparquet>=2023.0.0   # Alternative parquet library
+
+# Development dependencies (optional)
+# pytest>=7.0.0
+# pytest-cov>=4.0.0
+# black>=23.0.0
+# flake8>=6.0.0
+# mypy>=1.0.0

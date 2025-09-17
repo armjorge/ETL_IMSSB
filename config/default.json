@@ -1,0 +1,43 @@
+{
+  "logging": {
+    "level": "INFO",
+    "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    "handlers": ["console", "file"],
+    "file_path": "logs/etl.log"
+  },
+  "imss_bienestar": {
+    "input": {
+      "encoding": "utf-8",
+      "date_format": "%Y-%m-%d",
+      "decimal_separator": ".",
+      "thousands_separator": ","
+    },
+    "output": {
+      "base_dir": "output",
+      "formats": ["csv", "excel"],
+      "include_timestamp": true,
+      "include_validation_report": true
+    },
+    "validation": {
+      "required_columns": {
+        "patients": ["curp", "nombre", "apellido_paterno", "apellido_materno", "fecha_nacimiento"],
+        "services": ["codigo_servicio", "descripcion", "costo", "fecha_servicio"]
+      },
+      "data_types": {
+        "curp": "string",
+        "nss": "string",
+        "edad": "numeric",
+        "fecha_nacimiento": "datetime",
+        "fecha_servicio": "datetime",
+        "costo": "numeric"
+      }
+    }
+  },
+  "processing": {
+    "chunk_size": 10000,
+    "max_memory_usage": "1GB",
+    "parallel_processing": false,
+    "error_threshold": 0.05,
+    "max_errors": 1000
+  }
+}
