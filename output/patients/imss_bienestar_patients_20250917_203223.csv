@@ -1,4 +1,0 @@
-curp,nss,nombre,apellido_paterno,apellido_materno,fecha_nacimiento,sexo,edad,estado,unidad_medica,extraction_timestamp,data_source,curp_valid,nss_valid,fecha_nacimiento_valid,edad_valid
-ABCD123456HDFRYT01,12345678901,Juan Carlos,García,López,1985-03-15,M,39,Activo,UMF 001,2025-09-17 20:32:23.132678,IMSS_Bienestar,True,True,True,True
-EFGH789012MDFRZX02,23456789012,María Elena,Rodríguez,Martínez,1990-07-20,F,34,Activo,UMF 002,2025-09-17 20:32:23.132678,IMSS_Bienestar,True,True,True,True
-IJKL345678HDFRYU03,34567890123,Pedro Luis,Hernández,Pérez,1975-11-10,M,49,Inactivo,UMF 003,2025-09-17 20:32:23.132678,IMSS_Bienestar,True,True,True,True

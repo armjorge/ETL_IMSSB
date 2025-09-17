@@ -1,6 +1,0 @@
-codigo_servicio,descripcion,fecha_servicio,nss_paciente,costo,unidad_medica,medico,extraction_timestamp,data_source,costo_valid
-CONS001,Consulta General,2024-01-15,12345678901,150.0,UMF 001,Dr. Pérez,2025-09-17 20:32:02.200061,IMSS_Bienestar_Services,True
-LAB001,Laboratorio Clínico,2024-01-16,12345678901,300.0,UMF 001,Lab. Central,2025-09-17 20:32:02.200061,IMSS_Bienestar_Services,True
-RAD001,Radiografía,2024-01-17,23456789012,450.0,UMF 002,Dr. Gómez,2025-09-17 20:32:02.200061,IMSS_Bienestar_Services,True
-CONS002,Consulta Especialidad,2024-01-18,34567890123,250.0,UMF 003,Dra. Ruiz,2025-09-17 20:32:02.200061,IMSS_Bienestar_Services,True
-MED001,Medicamentos,2024-01-19,12345678901,75.0,UMF 001,Farmacia,2025-09-17 20:32:02.200061,IMSS_Bienestar_Services,True
