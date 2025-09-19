@@ -10,150 +10,137 @@ class DataIntegration:
         self.working_folder = working_folder
         self.data_access = data_access  
         self.integration_path = integration_path 
-    def integrar_datos(self, prei_path, altas_path, facturas_path):
-        print(f"🔍 Buscando archivos más recientes...")
-        
-        newest_altas_file, altas_date = self.get_newest_file(altas_path, "*.xlsx")
-        newest_prei_file, prei_date = self.get_newest_file(prei_path, "*.xlsx")
-        newest_facturas_file, facturas_date = self.get_newest_file(facturas_path, "*.xlsx")
-        
-        print(f"📊 Archivos encontrados:")
-        print(f"   Altas: {newest_altas_file} ({altas_date})")
-        print(f"   PREI: {newest_prei_file} ({prei_date})")
-        print(f"   Facturas: {newest_facturas_file} ({facturas_date})")
+        self.order_df = None
 
-        # Cargar DataFrames
-        df_altas = pd.read_excel(newest_altas_file) if newest_altas_file else pd.DataFrame()
-        df_prei = pd.read_excel(newest_prei_file) if newest_prei_file else pd.DataFrame()
-        df_facturas = pd.read_excel(newest_facturas_file) if newest_facturas_file else pd.DataFrame()
+    def integrar_datos(self, ordenes_fuente, facturas_fuente, tesoreria_fuente, logistica_fuente):
+        print("\n🔗 Iniciando proceso de TRANSFORMACIÓN de datos...")
 
-        # Agregar fechas de archivo a cada DataFrame
-        if not df_altas.empty and altas_date:
-            df_altas['file_date'] = altas_date
-        if not df_prei.empty and prei_date:
-            df_prei['file_date'] = prei_date  
-        if not df_facturas.empty and facturas_date:
-            df_facturas['file_date'] = facturas_date
+        print(f"🔍 Buscando archivos más recientes para órdenes, facturas, información tesorería y logística...")
 
-        if not df_altas.empty and not df_facturas.empty:  # ✅ Cambié 'and df_facturas.empty' por 'and not df_facturas.empty'
-            left_columns = df_altas[['noAlta', 'noOrden']]
-            right_columns = df_facturas[['Alta', 'Referencia']]
-            UUID_column = 'UUID'
-            return_column = df_facturas[UUID_column]
-            
-            df_altas[UUID_column] = self.validate_multiple_fields(left_columns, right_columns, return_column, unique=True)
-            print(message_print(f"✅ Columna {UUID_column} agregada a df_altas"))
-
-        if not df_altas.empty and not df_prei.empty:  # ✅ Cambié 'and df_facturas.empty' por 'and not df_facturas.empty'
-            left_columns = df_altas[['UUID', 'importe']]
-            right_columns = df_prei[['Folio Fiscal', 'Importe']]
-            columna_cr = 'Estado C.R.'
-            return_column_CR = df_prei[columna_cr]
-            df_altas[columna_cr] = self.validate_multiple_fields(left_columns, right_columns, return_column_CR, unique=True)
-            print(message_print(f"✅ Columna {columna_cr} agregada a df_altas"))
-
-        # Crear carpeta de integración
+        newest_orders_file, orders_date = self.get_newest_file(ordenes_fuente, "*.xlsx")
+        newest_logistic_file, logistic_date = self.get_newest_file(logistica_fuente, "*.xlsx")
+        newest_sagi_file, prei_date = self.get_newest_file(tesoreria_fuente, "*.xlsx")
+        newest_facturas_file, facturas_date = self.get_newest_file(facturas_fuente, "*.xlsx")
+        self.order_df = pd.read_excel(newest_orders_file) if newest_orders_file else pd.DataFrame()
+        self.order_df['Importe'] = self.order_df['precio_unitario'].astype(float) * self.order_df['cantidad_solicitada'].astype(float)
+        invoice_df = pd.read_excel(newest_facturas_file) if newest_facturas_file else pd.DataFrame()
+        # De inmediato quiero agregar los 'Orden de suministro' faltantes si es que existen
+        accounts_df = pd.read_excel(newest_sagi_file) if newest_sagi_file else pd.DataFrame()
+        accounts_df = self.clean_accounts_df(accounts_df, invoice_df)
+        invoice_df = self.clean_invoice_df(invoice_df)
         
         
+        logistic_df = pd.read_excel(newest_logistic_file) if newest_logistic_file else pd.DataFrame()
+
+        
+        print(self.order_df['numero_orden_suministro'].nunique())
+        print(self.order_df.shape)
+        orders_invoice_join = {
+            'left': ['numero_orden_suministro', 'Importe'],
+            'right': ['Referencia', 'Total'],
+            'return': ['UUID', 'Folio']
+        }        
+        self.order_df = self.populate_df(self.order_df, invoice_df, orders_invoice_join)
+        orders_sagi_join = {'left': ['numero_orden_suministro'], 'right': ['Orden de suministro'], 'return': ['Estado de la factura']}
+        self.order_df = self.populate_df(self.order_df, accounts_df, orders_sagi_join)
+        # Unión con datos logísticos.
+
+        # Guardar archivo de integración
+
+        today = datetime.datetime.now()
+        today_string_file = today.strftime('%Y-%m-%d %H') + 'h_integracion.xlsx'
         create_directory_if_not_exists(self.integration_path)
+        with pd.ExcelWriter(os.path.join(self.integration_path, today_string_file)) as writer:
+            self.order_df.to_excel(writer, sheet_name='order_df', index=False)
+            invoice_df.to_excel(writer, sheet_name='invoice_df', index=False)
+            accounts_df.to_excel(writer, sheet_name='accounts_df', index=False)
+            logistic_df.to_excel(writer, sheet_name='logistic_df', index=False)
+        print(f"✅ Archivo de integración guardado en {self.integration_path} como {today_string_file}")
 
-        # Encontrar la fecha más antigua
-        fechas_disponibles = []
-        if altas_date:
-            fechas_disponibles.append(altas_date)
-        if prei_date:
-            fechas_disponibles.append(prei_date)
-        if facturas_date:
-            fechas_disponibles.append(facturas_date)
+    def clean_accounts_df(self, accounts_df, invoice_df):
+        accounts_df = accounts_df[accounts_df['Estado de la factura'] != 'Cancelado']
+        account_df_nan = accounts_df[accounts_df['Orden de suministro'].isna()]
+        accounts_invoice_join = {'left': ['Folio fiscal'], 'right': ['UUID'], 'return': ['Referencia']}
+        account_df_nan = self.populate_df(account_df_nan, invoice_df, accounts_invoice_join)
+        # Solo los Folio fiscal donde Referencia no es nula
+        mask = account_df_nan['Referencia'].notna()
+        for folio, referencia in zip(account_df_nan.loc[mask, 'Folio fiscal'], account_df_nan.loc[mask, 'Referencia']):
+            accounts_df.loc[accounts_df['Folio fiscal'] == folio, 'Orden de suministro'] = referencia
 
-        if fechas_disponibles:
-            oldest_date = min(fechas_disponibles)
-            oldest_date_str = oldest_date.strftime("%Y-%m-%d-%H")
-            
-            # Crear nombre del archivo
-            xlsx_path = os.path.join(self.integration_path, f"{oldest_date_str}_Integracion.xlsx")
-            
-            try:
-                # Guardar múltiples hojas en un archivo Excel
-                with pd.ExcelWriter(xlsx_path, engine='openpyxl') as writer:
-                    if not df_altas.empty:
-                        df_altas.to_excel(writer, sheet_name='df_altas', index=False)
-                        print(f"✅ Hoja 'df_altas' guardada con {len(df_altas)} filas")
-                    
-                    if not df_prei.empty:
-                        df_prei.to_excel(writer, sheet_name='df_prei', index=False)
-                        print(f"✅ Hoja 'df_prei' guardada con {len(df_prei)} filas")
-                    
-                    if not df_facturas.empty:
-                        df_facturas.to_excel(writer, sheet_name='df_facturas', index=False)
-                        print(f"✅ Hoja 'df_facturas' guardada con {len(df_facturas)} filas")
-                
-                print(f"\n🎉 ¡Integración completada exitosamente!")
-                print(f"📁 Archivo guardado en: {xlsx_path}")
-                print(f"📅 Fecha de integración basada en: {oldest_date_str}")
-                
-            except Exception as e:
-                print(f"❌ Error al guardar archivo de integración: {e}")
-        else:
-            print("⚠️ No se encontraron archivos válidos para integrar")
+        #print(account_df_nan.info())
+        accounts_df['Total'] = accounts_df['Total'].replace('[\$,]', '', regex=True).astype(float)
+        return accounts_df
+    def clean_invoice_df(self, invoice_df): 
+        # Eliminar facturas no vigentes
+        invoice_df = invoice_df[invoice_df['UUID Descripción'] == 'Vigente']
+        # Eliminar sin orden vinculada
+        #invoice_df = invoice_df[invoice_df['Referencia'].notna()]
+        invoice_df = invoice_df.drop_duplicates(subset=['Referencia', 'Factura'])
+        if self.order_df is not None: 
+            print(f"🔍 Validando facturas VS órdenes de suministro...")
+            invoice_order_validation = {'left': ['Referencia', 'Total'], 'right': ['numero_orden_suministro', 'Importe'], 'return': ['orden_remision']}
+            invoice_df = self.populate_df(invoice_df, self.order_df, invoice_order_validation)
 
-    def validate_multiple_fields(self, left_columns, right_columns, return_column, unique=True):
+        return invoice_df
+
+    def populate_df(self, left_df, right_df, query_dict):
         """
-        Valida múltiples campos entre DataFrames y retorna una Serie con los valores correspondientes.
+        Pobla columnas en left_df a partir de right_df según query_dict.
         
-        Args:
-            left_columns: DataFrame con las columnas de referencia (ej: df_altas[['noAlta', 'noOrden', 'importe']])
-            right_columns: DataFrame con las columnas objetivo (ej: df_facturas[['Alta', 'Referencia', 'Importe']])
-            return_column: Serie con los valores a retornar (ej: df_facturas['UUID'])
-            unique: Si True, espera solo 1 resultado por fila
-        
-        Returns:
-            pd.Series: Serie con los valores encontrados o mensajes de error
+        query_dict:
+            {
+                'left': ['col1_left', 'col2_left'],
+                'right': ['col1_right', 'col2_right'],
+                'return': ['colX_right', 'colY_right']
+            }
         """
-        results = []
-        
-        if unique:
-            for index, row in left_columns.iterrows():
-                # Crear máscara de comparación para todas las columnas
-                mask = pd.Series([True] * len(right_columns))
-                
-                # Aplicar filtros por cada columna
-                for left_col, right_col in zip(left_columns.columns, right_columns.columns):
-                    mask = mask & (right_columns[right_col] == row[left_col])
-                
-                # Filtrar DataFrame con la máscara
-                filtered_df = right_columns[mask]
-                filtered_df = filtered_df.drop_duplicates()
+        left_keys = query_dict['left']
+        right_keys = query_dict['right']
+        return_cols = query_dict['return']
 
-                if filtered_df.shape[0] == 1:
-                    # Solo un resultado encontrado
-                    matching_index = filtered_df.index[0]
-                    result_value = return_column.iloc[matching_index]
-                    results.append(result_value)
-                    
-                elif filtered_df.shape[0] == 0:
-                    # No se encontraron resultados
-                    # Aquí puedo hace otra función para retornar strings más complejas como las de Con match para orden y alta, sin match para importe. 
-                    # Algo que oriente más al usuario en caso de no tener factura ligada. 
-                    results.append("No localizado")
-                    
-                else:
-                    # Múltiples resultados encontrados
-                    matching_indices = filtered_df.index.tolist()
-                    matching_values = return_column.iloc[matching_indices].tolist()
-                    error_msg = f"Error: múltiples resultados ({len(matching_values)}):\n {'\n'.join(map(str, matching_values))}"
-                    results.append(error_msg)
-                    print(f"⚠️ Fila {index}: {error_msg}")
-                    
-                    # Debug: mostrar qué valores causaron duplicados
-                    debug_values = []
-                    for col in left_columns.columns:
-                        debug_values.append(f"{col}={row[col]}")
-                    print(f"   Valores de búsqueda: {', '.join(debug_values)}")
-        
-        # Retornar como Serie con el mismo índice que left_columns
-        return pd.Series(results, index=left_columns.index)
+        # Validación
+        if len(left_keys) != len(right_keys):
+            raise ValueError("Las llaves left y right deben tener la misma longitud")
+        # Validación de existencia de columnas en left_df
+        missing_left = [col for col in left_keys if col not in left_df.columns]
+        if missing_left:
+            print(f"⚠️ Columnas faltantes en left_df: {', '.join(missing_left)}. No se puede proceder con el merge.")
+            return left_df
 
+        # Validación de existencia de columnas en right_df para keys
+        missing_right_keys = [col for col in right_keys if col not in right_df.columns]
+        if missing_right_keys:
+            print(f"⚠️ Columnas faltantes en right_df para keys: {', '.join(missing_right_keys)}. No se puede proceder con el merge.")
+            return left_df
+
+        # Validación de existencia de columnas en right_df para return
+        missing_return = [col for col in return_cols if col not in right_df.columns]
+        if missing_return:
+            print(f"⚠️ Columnas faltantes en right_df para return: {', '.join(missing_return)}. No se puede proceder con el merge.")
+            return left_df
+
+        # Índice compuesto para búsquedas rápidas
+        right_index = right_df.groupby(right_keys)[return_cols].agg(lambda x: ','.join(x.astype(str))).reset_index()
+
+        # Hacer merge left→right (left join)
+        merged = pd.merge(
+            left_df,
+            right_index,
+            how="left",
+            left_on=left_keys,
+            right_on=right_keys,
+            suffixes=('', '_right')
+        )
+
+        # Rellenar NaN con "no localizado"
+        for col in return_cols:
+            if col in merged.columns:
+                merged[col] = merged[col].fillna("no localizado")
+
+        # Eliminar columnas auxiliares de join (las right_keys)
+        merged = merged.drop(columns=right_keys, errors="ignore")
+
+        return merged
 
     def get_newest_file(self, path, pattern="*.xlsx"): 
         """

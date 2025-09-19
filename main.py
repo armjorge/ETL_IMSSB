@@ -23,6 +23,7 @@ class ETL_APP:
         self.data_access = None 
         self.integration_path = os.path.join(self.working_folder, "Integración")
         
+        
     def update_sql_historico(self):
         print("🔄 Integrando información...")
         print("Fuente de las altas históricas")
@@ -134,8 +135,10 @@ class ETL_APP:
         accounts_path = os.path.join(self.working_folder, "SAGI")
         temporal_accounts_path = os.path.join(accounts_path, 'Temporal downloads')
         create_directory_if_not_exists(temporal_accounts_path)
+        logistica_path = os.path.join(self.working_folder, "Logística")
+        create_directory_if_not_exists(logistica_path)
         #ORDERS_processed_path = os.path.join(self.working_folder, "SAI", "Orders_Procesados")
-        FACTURAS_processed_path = os.path.join(self.working_folder, "Facturas", "Consultas")
+        FACTURAS_processed_path = os.path.join(self.working_folder, "Facturas")
         PREI_processed_path = os.path.join(self.working_folder, "PREI", "PREI_files")
         ALTAS_processed_path = os.path.join(self.working_folder, "SAI", "SAI Altas_files")
         queries_folder = os.path.join(self.folder_root, "sql_queries")
@@ -148,6 +151,7 @@ class ETL_APP:
                 f"\t1) Descargar {camunda_steps}\n"
                 f"\t2) Descargar {sagi_steps}\n"
                 f"\t3) Cargar {facturas}\n"
+                "\t3.1) Información logística -> En desarrollo\n"
                 "TRANSFORMACIÓN\n"
                 "\t4) Integrar información\n"
                 "CARGA\n"
@@ -187,7 +191,11 @@ class ETL_APP:
                     print("⚠️ Carga de facturas pendientes")
             elif choice == "4":
                 print("🔄 Integrando información...")
-                self.data_integration.integrar_datos(PREI_processed_path, ALTAS_processed_path, FACTURAS_processed_path)
+                ordenes_fuente = orders_path
+                facturas_fuente = FACTURAS_processed_path
+                sagi_fuente = accounts_path
+                logistica_fuente = logistica_path  # En desarrollo
+                self.data_integration.integrar_datos(ordenes_fuente, facturas_fuente, sagi_fuente, logistica_fuente)
 
             elif choice == "5":
                 print("🔄 Actualizando SQL (Longitudinal)")
