@@ -5,6 +5,8 @@ import pandas as pd
 import datetime
 import platform
 import hashlib
+import csv
+from io import StringIO
 
 
 class DownloadedFilesManager:
@@ -12,251 +14,159 @@ class DownloadedFilesManager:
         self.working_folder = working_folder
         self.data_access = data_access
 
-    def manage_downloaded_files(self, path_input):
-        # Path de salida basado en la carpeta padre
-        sub_path = os.path.abspath(os.path.join(path_input, ".."))
-        preffix = os.path.basename(sub_path)
+    def manage_downloaded_files(self, path_input, steps):
+        #print("steps\n", steps)
+        print(f"Procesando archivos desde\n\t{os.path.basename(path_input)}\n")
+        # Obtener fecha de hoy
+        today = datetime.date.today()
+        current_hour = datetime.datetime.now().hour
+        # Listar archivos de hoy con extensiones válidas
+        valid_extensions = ['.csv', '.xlsx', '.xls']
+        files_today = []
+        for file in os.listdir(path_input):
+            file_path = os.path.join(path_input, file)
+            if os.path.isfile(file_path) and any(file.lower().endswith(ext) for ext in valid_extensions):
+                creation_date = self.get_file_creation_date(file_path).date()
+                if creation_date == today:
+                    files_today.append(file_path)
+        # Files_today tiene los archivos descargados de hoy 
+        # Generamos las matrices por tipo de archivo
+        csv = []
+        xls = []
+        xlsx = []
+        for file in files_today:
+            if file.lower().endswith('.csv'):
+                csv.append(file)
+            elif file.lower().endswith('.xls'):
+                xls.append(file)
+            elif file.lower().endswith('.xlsx'):
+                xlsx.append(file)
+        # Cargar dataframes para cada tipo
+        csv_dfs = self.extract_dataframes(csv)
+        xls_dfs = self.extract_dataframes(xls)
+        xlsx_dfs = self.extract_dataframes(xlsx)
+        if csv_dfs: 
+            self.concatenate_dfs(csv_dfs, path_input, steps)
+            for file in csv:
+                os.remove(file)
+        if xls_dfs:
+            self.concatenate_dfs(xls_dfs, path_input, steps)
+            for file in xls:
+                os.remove(file)
+        if xlsx_dfs:
+            self.concatenate_dfs(xlsx_dfs, path_input, steps)
+            for file in xlsx:
+                os.remove(file)
+        print("✅ Proceso de fusión y renombre de archivos descargados completado.\n")
+        print("Se fusionan archivos siempre que sean del mismo día, mismos encabezados, contenido distinto")
 
-        print(f"Procesando archivos desde\n{os.path.basename(path_input)}\n")
+    def concatenate_dfs(self, df_list, path_input, steps):
+        if not df_list:
+            return
+        
+        # Obtener fecha de hoy
+        today = datetime.date.today()
+        current_hour = datetime.datetime.now().hour
 
-        # Clasificación de archivos .xlsx (ALTAS y ORDERS)
-        xlsx_list = [f for f in os.listdir(path_input) if f.lower().endswith(".xlsx")]
-        print(f"Archivos .xlsx encontrados: {xlsx_list}")
-        columns_altas = self.data_access['columns_IMSS_altas']
-        altas_path = os.path.join(sub_path, f"{preffix} Altas_files")
-        columns_orders = self.data_access['columns_IMSS_orders']
-        orders_path = os.path.join(sub_path, f"{preffix} Orders_files")
-        prei_output_path = os.path.join(sub_path, f"{preffix}_files")
+        # Group by columns (as tuple of sorted column names)
+        groups = {}
+        for df in df_list:
+            cols = tuple(sorted(df.columns))
+            if cols not in groups:
+                groups[cols] = []
+            groups[cols].append(df)
+        
+        date_obj = datetime.datetime.combine(today, datetime.time(hour=current_hour))
+        date_str = self.format_date_for_filename(date_obj)
+        base_path = os.path.join(path_input, '..')
+        
+        for i, (cols, dfs) in enumerate(groups.items()):
+            # 🔑 Siempre concatenar, sin borrar duplicados
+            result_df = pd.concat(dfs, ignore_index=True, sort=False)
 
-        altas_files = []
-        altas_dates = []
-        orders_files = []
-        orders_dates = []
-        prei_files = []
-        prei_dates = []
+            # Guardar archivo
+            filename = f'{date_str}h {steps}_{i}.xlsx' if len(groups) > 1 else f'{date_str}h {steps}.xlsx'
+            save_path = os.path.join(base_path, filename)
+            result_df.to_excel(save_path, index=False)
+            print(f"✅ Guardado: {save_path} ({len(result_df)} filas)")
+        
 
-        if xlsx_list:
-            for file in xlsx_list:
-                file_path = os.path.join(path_input, file)
-                try:
-                    df_file = pd.read_excel(file_path)
-                except Exception as e:
-                    print(f"No se pudo leer {file}: {e}")
-                    continue
+    def extract_dataframes(self, file_list):
+        """Carga archivos CSV/XLSX/XLS y devuelve una lista de DataFrames.
+        - CSV: respeta comas escapadas con '\,' (escapechar='\\'), BOM utf-8-sig.
+        - XLSX: lee todas las hojas; agrega un DF por hoja no vacía.
+        - XLS: usa self.XLS_header_location(file). Acepta DF o dict de DFs.
+        """
+        def _clean_df(df: pd.DataFrame) -> pd.DataFrame | None:
+            if df is None:
+                return None
+            # Normaliza encabezados y elimina columnas 'Unnamed'
+            df.columns = (pd.Index(df.columns)
+                        .astype(str)
+                        .str.replace(r"\s+", " ", regex=True)
+                        .str.strip())
+            df = df.loc[:, ~df.columns.str.match(r"^Unnamed(\s*:\s*\d+)?$")]
+            # Opcional: descartar hojas completamente vacías
+            if df.empty or df.dropna(how="all").empty:
+                return None
+            return df
 
-                file_creation_date = self.get_file_creation_date(file_path)
-                formatted_date = self.format_date_for_filename(file_creation_date)
+        dataframes: list[pd.DataFrame] = []
+        if not file_list:
+            return dataframes
 
-                cols = df_file.columns.tolist()
-                # Normalizar para comparar de manera robusta
-                cols_norm = self._normalize_cols(cols)
-                altas_norm = self._normalize_cols(columns_altas)
-                orders_norm = self._normalize_cols(columns_orders)
+        for file in file_list:
+            file_type = os.path.splitext(file)[1].lower().lstrip('.')
+            try:
+                if file_type == 'csv':
+                    # CSV robusto: respeta '\,' como coma literal dentro del campo
+                    df = pd.read_csv(
+                        file,
+                        sep=",",
+                        engine="c",              # soporta escapechar y es rápido
+                        encoding="utf-8-sig",
+                        quoting=csv.QUOTE_NONE,
+                        escapechar="\\",
+                        na_values=["\\N"],
+                        dtype=str,
+                        on_bad_lines="skip"
+                    )
+                    df = _clean_df(df)
+                    if df is not None:
+                        dataframes.append(df)
 
-                match_altas = (cols_norm == altas_norm) or (set(altas_norm).issubset(set(cols_norm)))
-                match_orders = (cols_norm == orders_norm) or (set(orders_norm).issubset(set(cols_norm)))
+                elif file_type == 'xlsx':
+                    # XLSX: leer TODAS las hojas y agregar cada una como DF
+                    xls = pd.ExcelFile(file)   # deja que pandas escoja engine disponible
+                    for sheet in xls.sheet_names:
+                        dfx = pd.read_excel(xls, sheet_name=sheet, dtype=str)
+                        dfx = _clean_df(dfx)
+                        if dfx is not None:
+                            dataframes.append(dfx)
 
-                if match_altas:
-                    print(f"Archivo {file} identificado como Altas (creado: {file_creation_date})")
-                    altas_files.append(file_path)
-                    altas_dates.append(formatted_date)
-                elif match_orders:
-                    print(f"Archivo {file} identificado como Orders (creado: {file_creation_date})")
-                    orders_files.append(file_path)
-                    orders_dates.append(formatted_date)
-                else:
-                    # Fallback por nombre de archivo
-                    fname = os.path.basename(file_path).lower()
-                    if 'alta' in fname:
-                        print(f"Fallback por nombre: {file} clasificado como Altas")
-                        altas_files.append(file_path)
-                        altas_dates.append(formatted_date)
-                    elif 'orden' in fname or 'order' in fname:
-                        print(f"Fallback por nombre: {file} clasificado como Orders")
-                        orders_files.append(file_path)
-                        orders_dates.append(formatted_date)
+                elif file_type == 'xls':
+                    # XLS: tu función especializada (puede devolver DF o dict de DFs)
+                    out = self.XLS_header_location(file)
+                    if isinstance(out, dict):
+                        for dfx in out.values():
+                            dfx = _clean_df(dfx)
+                            if dfx is not None:
+                                dataframes.append(dfx)
                     else:
-                        print(f"Advertencia: {file} no coincide por headers. Cols: {cols}")
-        else:
-            print("No se encontraron archivos .xlsx en la carpeta de descargas temporales.")
+                        dfx = _clean_df(out)
+                        if dfx is not None:
+                            dataframes.append(dfx)
 
-        # Clasificación de archivos .xls (PREI)
-        xls_list = [f for f in os.listdir(path_input) if f.lower().endswith(".xls")]
-        if xls_list:
-            for file in xls_list:
-                file_path = os.path.join(path_input, file)
-                df_file = self.XLS_header_location(file_path)
-                if df_file is not None:
-                    prei_files.append(file_path)
-                    file_creation_date = self.get_file_creation_date(file_path)
-                    formatted_date = self.format_date_for_filename(file_creation_date)
-                    prei_dates.append(formatted_date)
-        else:
-            print("No se encontraron archivos .xls en la carpeta de descargas temporales.")
-
-        # ALTAS: combinar (evitando duplicados de archivo) y mover con nombre unificado
-        if altas_files:
-            create_directory_if_not_exists(altas_path)
-
-            # Evitar archivos duplicados (mismo contenido) por hash
-            unique_altas_files = []
-            seen_hashes = set()
-            for f in altas_files:
-                try:
-                    h = self._file_sha256(f)
-                except Exception as e:
-                    print(f"Advertencia: no se pudo calcular hash de {os.path.basename(f)}: {e}. Se incluirá igualmente.")
-                    h = None
-                if (h is None) or (h not in seen_hashes):
-                    unique_altas_files.append(f)
-                    if h is not None:
-                        seen_hashes.add(h)
-
-            if unique_altas_files:
-                df_altas = pd.DataFrame()
-                kept_dates = []
-                for f in unique_altas_files:
-                    try:
-                        df = pd.read_excel(f)
-                        df_altas = pd.concat([df_altas, df], ignore_index=True)
-                        # mapear fecha correspondiente al archivo original
-                        try:
-                            idx = altas_files.index(f)
-                            kept_dates.append(altas_dates[idx])
-                        except Exception:
-                            pass
-                    except Exception as e:
-                        print(f"Error leyendo {os.path.basename(f)}: {e}")
-
-                if not df_altas.empty:
-                    unique_dates = sorted(list(set(kept_dates))) if kept_dates else []
-                    if len(unique_dates) == 1:
-                        date_str = unique_dates[0]
-                    elif len(unique_dates) > 1:
-                        date_str = f"{unique_dates[0]}_to_{unique_dates[-1]}"
-                    else:
-                        date_str = self.format_date_for_filename(datetime.datetime.now())
-
-                    filename = f"{date_str}-{preffix} Altas.xlsx"
-                    output_path = os.path.join(altas_path, filename)
-                    try:
-                        df_altas.to_excel(output_path, index=False)
-                        print(f"Archivo ALTAS combinado guardado: {filename}")
-                        print(f"Total de filas ALTAS: {len(df_altas)}")
-                        # eliminar originales
-                        for f in altas_files:
-                            try:
-                                os.remove(f)
-                                print(f"Eliminado original ALTAS: {os.path.basename(f)}")
-                            except Exception as e:
-                                print(f"Error eliminando {os.path.basename(f)}: {e}")
-                    except Exception as e:
-                        print(f"Error guardando archivo ALTAS combinado: {e}")
-            else:
-                print("No hay archivos ALTAS únicos para combinar.")
-
-        # ORDERS: combinar (evitando duplicados de archivo) y mover con nombre unificado
-        if orders_files:
-            create_directory_if_not_exists(orders_path)
-
-            # Evitar archivos duplicados (mismo contenido) por hash
-            unique_orders_files = []
-            seen_hashes = set()
-            for f in orders_files:
-                try:
-                    h = self._file_sha256(f)
-                except Exception as e:
-                    print(f"Advertencia: no se pudo calcular hash de {os.path.basename(f)}: {e}. Se incluirá igualmente.")
-                    h = None
-                if (h is None) or (h not in seen_hashes):
-                    unique_orders_files.append(f)
-                    if h is not None:
-                        seen_hashes.add(h)
-
-            if unique_orders_files:
-                df_orders = pd.DataFrame()
-                kept_dates = []
-                for f in unique_orders_files:
-                    try:
-                        df = pd.read_excel(f)
-                        df_orders = pd.concat([df_orders, df], ignore_index=True)
-                        # mapear fecha correspondiente al archivo original
-                        try:
-                            idx = orders_files.index(f)
-                            kept_dates.append(orders_dates[idx])
-                        except Exception:
-                            pass
-                    except Exception as e:
-                        print(f"Error leyendo {os.path.basename(f)}: {e}")
-
-                if not df_orders.empty:
-                    unique_dates = sorted(list(set(kept_dates))) if kept_dates else []
-                    if len(unique_dates) == 1:
-                        date_str = unique_dates[0]
-                    elif len(unique_dates) > 1:
-                        date_str = f"{unique_dates[0]}_to_{unique_dates[-1]}"
-                    else:
-                        date_str = self.format_date_for_filename(datetime.datetime.now())
-
-                    filename = f"{date_str}-{preffix} Orders.xlsx"
-                    output_path = os.path.join(orders_path, filename)
-                    try:
-                        df_orders.to_excel(output_path, index=False)
-                        print(f"Archivo ORDERS combinado guardado: {filename}")
-                        print(f"Total de filas ORDERS: {len(df_orders)}")
-                        # eliminar originales
-                        for f in orders_files:
-                            try:
-                                os.remove(f)
-                                print(f"Eliminado original ORDERS: {os.path.basename(f)}")
-                            except Exception as e:
-                                print(f"Error eliminando {os.path.basename(f)}: {e}")
-                    except Exception as e:
-                        print(f"Error guardando archivo ORDERS combinado: {e}")
-            else:
-                print("No hay archivos ORDERS únicos para combinar.")
-
-        # PREI: ya existía lógica de combinación; la mantenemos
-        if prei_files:
-            create_directory_if_not_exists(prei_output_path)
-            df_prei = pd.DataFrame()
-
-            for file_path in prei_files:
-                df_file = self.XLS_header_location(file_path)
-                if df_file is not None and not df_file.empty:
-                    df_prei = pd.concat([df_prei, df_file], ignore_index=True)
-                    print(f"Archivo {os.path.basename(file_path)} agregado al DataFrame PREI combinado")
                 else:
-                    print(f"Archivo {os.path.basename(file_path)} omitido (vacío o sin headers válidos)")
+                    print(f"⚠️ Formato no soportado: {file}")
 
-            if not df_prei.empty:
-                unique_dates = sorted(list(set(prei_dates))) if prei_dates else []
-                if len(unique_dates) == 1:
-                    date_str = unique_dates[0]
-                elif len(unique_dates) > 1:
-                    date_str = f"{unique_dates[0]}_to_{unique_dates[-1]}"
-                else:
-                    date_str = self.format_date_for_filename(datetime.datetime.now())
+            except Exception as e:
+                print(f"❌ Error al procesar {file}: {e}")
+                # continúa con el siguiente archivo
 
-                filename = f"{date_str}-{preffix}.xlsx"
-                output_file_path = os.path.join(prei_output_path, filename)
+        return dataframes
 
-                try:
-                    df_prei.to_excel(output_file_path, index=False)
-                    print(f"Archivo PREI combinado guardado: {filename}")
-                    print(f"Total de filas PREI: {len(df_prei)}")
 
-                    # Eliminar archivos originales después de combinar
-                    for file_path in prei_files:
-                        try:
-                            os.remove(file_path)
-                            print(f"Archivo PREI original eliminado: {os.path.basename(file_path)}")
-                        except Exception as e:
-                            print(f"Error eliminando {os.path.basename(file_path)}: {e}")
-                except Exception as e:
-                    print(f"Error guardando archivo PREI combinado: {e}")
-            else:
-                print("No se encontraron datos válidos en los archivos PREI")
 
     def _file_sha256(self, file_path, chunk_size=65536):
         sha256 = hashlib.sha256()

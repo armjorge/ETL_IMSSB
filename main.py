@@ -12,7 +12,6 @@ from modules.facturas import FACTURAS
 from modules.downloaded_files_manager import DownloadedFilesManager
 from modules.data_integration import DataIntegration
 from modules.sql_connexion_updating import SQL_CONNEXION_UPDATING
-import json  # Agregar json para guardar páginas
 
 
 class ETL_APP:
@@ -160,19 +159,25 @@ class ETL_APP:
             )).strip()
         
             if choice == "1":
+                # Probar fusión de archivos descargados 
+                self.downloaded_files_manager.manage_downloaded_files(temporal_orders_path, camunda_steps)
                 exito_descarga_ordenes = self.orders_manager.execute_download_session(temporal_orders_path, camunda_steps)
                 if exito_descarga_ordenes:
                     print("✅ Descarga de Órdenes completada")
-                    self.downloaded_files_manager.manage_downloaded_files(temporal_orders_path)
                 else:
                     print("❌ Error en descarga de Órdenes")
+
+                self.downloaded_files_manager.manage_downloaded_files(temporal_orders_path, camunda_steps)
+
             elif choice == "2":
+                self.downloaded_files_manager.manage_downloaded_files(temporal_sagi_path, sagi_steps)   
                 exito_descarga_sagi = self.orders_manager.execute_download_session(temporal_sagi_path, sagi_steps)
                 if exito_descarga_sagi:
                     print("✅ Descarga de SAGI completada")
-                    self.downloaded_files_manager.manage_downloaded_files(temporal_sagi_path)
                 else:
                     print("⚠️ Descarga de SAGI incompleta con archivos pendientes")
+
+                self.downloaded_files_manager.manage_downloaded_files(temporal_sagi_path, sagi_steps)    
             elif choice == "3":
                 print("📄 Cargando facturas...")
                 exito_facturas = self.facturas_manager.cargar_facturas(facturas)

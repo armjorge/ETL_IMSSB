@@ -28,9 +28,7 @@ class FACTURAS:
 
         
         
-        # ✅ Usar carpeta local en lugar de Dropbox
-        consultas_folder = os.path.join(facturas_folder, "Consultas")
-        create_directory_if_not_exists(consultas_folder)
+
 
         # DataFrame general vacío
         df_general = pd.DataFrame()
@@ -64,7 +62,7 @@ class FACTURAS:
         # Guardar resultado en carpeta local
         if not df_general.empty:
             today = datetime.datetime.today().strftime("%Y-%m-%d-%H")  # ✅ Formato de fecha corregido
-            output_file = os.path.join(consultas_folder, f"{today}_PAQ_IMSS.xlsx")  # ✅ Usar carpeta local
+            output_file = os.path.join(facturas_folder, f"{today}h_{facturas}.xlsx")  # ✅ Usar carpeta local
             df_xmls = pd.read_excel(xlsx_database)
             print(f"📊 Filas en df_xmls antes de limpiar: {df_xmls.shape[0]}")
 
