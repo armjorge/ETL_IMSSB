@@ -9,9 +9,15 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.keys import Keys
 from selenium.common.exceptions import TimeoutException
-from modules.helpers import create_directory_if_not_exists, message_print
+#from modules.helpers import 
 import numpy as np
 import concurrent.futures  # Agregar para procesamiento paralelo
+import yaml
+from pathlib import Path
+import shutil
+from PyPDF2 import PdfReader
+import re
+
 
 class FACTURAS:
     def __init__(self, working_folder, data_access):
@@ -20,16 +26,11 @@ class FACTURAS:
         
     def cargar_facturas(self, facturas):
         facturas_folder = os.path.join(self.working_folder, "Facturas")
-        create_directory_if_not_exists(facturas_folder)        
+        os.makedirs(facturas_folder, exist_ok=True)
         xlsx_database = os.path.join(facturas_folder, 'xmls_extraidos.xlsx')
         self.smart_xml_extraction(xlsx_database)   
         
         preffix = os.path.basename(facturas_folder)
-
-        
-        
-
-
         # DataFrame general vacío
         df_general = pd.DataFrame()
 
@@ -78,7 +79,31 @@ class FACTURAS:
             print(df_general.head(),df_xmls.head())
             df_general = pd.merge(df_general, df_xmls, how='left', left_on='Factura', right_on='Folio')
             print(f"print filas después de la fusión con el XML {df_general.shape[0]}")
-            print("\n✅ DataFrame fusionado con información XL con éxito.")
+            print("\n✅ DataFrame fusionado con información XML con éxito.")
+            # --- Cargar estatus SAT y eliminar Cancelados ---
+            invoice_to_check = os.path.join(self.working_folder, "Estatus SAT", "estatus_facturas.xlsx")
+            if os.path.isfile(invoice_to_check):
+                df_status_SAT = pd.read_excel(invoice_to_check)
+
+                # Asegurarnos de que las columnas existan
+                if {'uuid', 'estado'}.issubset(df_status_SAT.columns):
+                    # Lista de UUID cancelados
+                    uuid_list = df_status_SAT.loc[df_status_SAT['estado'] == 'Cancelado', 'uuid'].astype(str).tolist()
+                    print(f"⚠️  {len(uuid_list)} UUIDs marcados como Cancelado en SAT")
+
+                    # Quitar de invoice_df los UUID que están en esa lista
+                    # Marcar como Cancelado en invoice_df
+                    mask = df_general['UUID'].astype(str).isin(uuid_list)
+                    df_general.loc[mask, 'UUID Descripción'] = 'Cancelado'
+
+                    print(f"📝 {mask.sum()} facturas actualizadas como Cancelado")
+
+                    
+                else:
+                    print("⚠️ Archivo estatus_facturas.xlsx no tiene columnas esperadas: 'uuid', 'estado'")
+            else:
+                print("ℹ️ No existe estatus_facturas.xlsx, no se filtraron cancelados")
+
             try:
                 df_general.to_excel(output_file, index=False)
                 print(f"\n💾 Archivo guardado en {output_file}")
@@ -96,17 +121,14 @@ class FACTURAS:
                 print(f"💾 Archivo guardado en ubicación temporal: {fallback_file}")
 
                 return False
-                
+
         else:
             print("\n⚠️ No se generó DataFrame, revisar configuración.")        
+        #self.check_invoice_status(facturas)
 
         
-
-        #self.validacion_de_paqs(dict_path_sheet, dic_columnas, facturas_folder, altas_path, altas_sheet, info_types, xlsx_database)
-
-
     def smart_xml_extraction(self, xlsx_database):
-        print(message_print("Extrayendo la información de los XMLs..."))
+        print(("Extrayendo la información de los XMLs..."))
         invoice_paths = []
         for path in self.data_access['facturas_path']:
             if os.path.exists(path):
@@ -238,199 +260,177 @@ class FACTURAS:
 
 
     # ==== 
-    # SECCIÓN PARA CARGAR LOS ARCHIVOS DE PAQ
+    # SECCIÓN PARA CONFIRMAR EL ESTATUS DE LAS FACTURAS
     # ====
-    def validacion_de_paqs(self, dict_path_sheet, dic_columnas, paq_folder, altas_path, altas_sheet, info_types, xlsx_database):
-        # (I) Carga
-        df_entregas_o_altas = pd.read_excel(altas_path, sheet_name=altas_sheet)
-        columnas_objetivo = ["Folio", "Referencia", "Alta", "Total", "UUID"]
-        df_facturas = pd.DataFrame(columns=columnas_objetivo)
 
-        # (2) Iteramos simultáneamente sobre ambos diccionarios. 
-        #     Se asume que dict_path_sheet y dic_columnas ya están "alineados" en el mismo orden de inserción.
-        for (ruta_excel, nombre_hoja), lista_cols in zip(dict_path_sheet.items(), dic_columnas.values()):
-            # ruta_excel: p.ej. r"C:\Users\arman\Dropbox\FACT 2023\Generacion facturas IMSS VFinal.xlsx"
-            # nombre_hoja:    p.ej. "Reporte Paq"
-            # lista_cols:     p.ej. ["Folio", "Referencia", "Alta", "Total", "UUID"]
+    def check_invoice_status(self, facturas):
+        print("Ingresando a la sección para segregar los PDF's")
 
-            # (3) Leemos únicamente las columnas indicadas en lista_cols
-            df_temp = pd.read_excel(
-                ruta_excel,
-                sheet_name=nombre_hoja,
-                usecols=lista_cols
-            )
+        # --- Folders ---
+        invoice_to_check = os.path.join(self.working_folder, "Estatus SAT")
+        invoice_temporal_files = os.path.join(invoice_to_check, "PDFs")
+        os.makedirs(invoice_temporal_files, exist_ok=True)
 
-            # (4) Concatenamos al DataFrame global
-            df_facturas = pd.concat([df_facturas, df_temp], ignore_index=True)
-        # (II) Limpia
+        # --- Read Excel list of folios ---
+        xlsx_database = os.path.join(invoice_to_check, "Estatus_SAT_Download.xlsx")
+        if not os.path.isfile(xlsx_database):
+            print(f"❌ No existe el Excel de folios: {xlsx_database}")
+            return
 
-        # (II.1) Corrección de tipos, remover duplicados y lógica de referencias.
-        df_entregas_o_altas, df_facturas = self.correccion_types(df_entregas_o_altas, df_facturas, info_types)
+        pdf_files_list = pd.read_excel(xlsx_database)
+        if pdf_files_list.empty or "Folio" not in pdf_files_list.columns:
+            print("❌ No folios encontrados en el archivo Excel.")
+            return
 
-        print("Información del dataframe altas: \n")
-        print(df_entregas_o_altas.info())
-        print("Información del dataframe de facturas: \n")
-        print(df_facturas.info())
-        excel_facturas= os.path.join(paq_folder, f"{info_types}.xlsx")
+        print(pdf_files_list.head())
 
-        # III.I Cargar IMSS y ligar.     
-        df_altas_df_facturas = {
-            'noAlta': 'Alta',
-            'noOrden': 'Referencia'
-        }
+        # --- Load YAML (ya está en la clase) -> usar carpeta del Excel como raíz de búsqueda ---
+        paqs = self.data_access.get(facturas, {})
+        base_dirs = []
 
-        df_entregas_o_altas['Factura'] = self.multi_column_lookup(
-            df_to_fill=df_entregas_o_altas,
-            df_to_consult=df_facturas,
-            match_columns=df_altas_df_facturas,
-            return_column='Folio',
-            default_value='sin match'
-        )
-        # III.II Cargar IMSS y ligar.     
-        df_altas_df_facturas = {
-            'Alta': 'noAlta',
-            'Referencia': 'noOrden'
-        }
+        for name, cfg in paqs.items():
+            excel_path = Path(cfg["file_path"])
+            folder = excel_path.parent  # carpeta donde vive el Excel
+            base_dirs.append(folder)
 
-        df_facturas['Alta_ligada'] = self.multi_column_lookup(
-            df_to_fill=df_facturas,
-            df_to_consult=df_entregas_o_altas,
-            match_columns=df_altas_df_facturas,
-            return_column='noAlta',
-            default_value='alta no localizada'
-        )
-        
+        # Deduplicar y normalizar
+        base_dirs = list(dict.fromkeys([d.resolve() for d in base_dirs]))
+        print("\n📂 Carpetas base a escanear:")
+        for d in base_dirs:
+            print(f"  - {d}  (exists: {d.exists()})")
 
-        df_facturas.to_excel(excel_facturas, index=False)
+        # --- Indexar TODOS los PDFs de forma recursiva (una sola pasada) ---
+        pdf_index = []  # lista de tuplas: (nombre_base_lower, ruta_abs_str)
+        total_indexed = 0
+        for d in base_dirs:
+            if not d.exists():
+                print(f"⚠️  Carpeta inexistente: {d}")
+                continue
+            count = 0
+            # rglob es recursivo: busca en subcarpetas (ej. "08 Agosto\...")
+            for pdf in d.rglob("*.pdf"):
+                pdf_index.append((pdf.name.lower(), str(pdf)))
+                count += 1
+            total_indexed += count
+            print(f"   → {count} PDFs indexados bajo {d}")
 
-        #IV Sobreescribir UUID y totales 
-        print("Vamos a poblar el UUID de la base de facturación con info extraída de los XML's")
-        if os.path.exists(xlsx_database):
-            columna_UUID ='UUID'
-            df_database = pd.read_excel(xlsx_database)
-            df_database = (
-                df_database
-                .drop_duplicates(subset='UUID', keep='first')
-                .reset_index(drop=True)
-            )
-            df_UUIDS = {'Folio': 'Folio'}
-            df_facturas['UUID'] = self.multi_column_lookup(
-                df_to_fill=df_facturas,
-                df_to_consult=df_database,
-                match_columns=df_UUIDS,
-                return_column=columna_UUID,
-                default_value=f'{columna_UUID} no localizado'
-            )
-        
-        if os.path.exists(xlsx_database):
-            columna_retorno ='Importe'
-            columna_poblar = 'Total'
-            print(f"Vamos a poblar l columna {columna_poblar} con de la columna {columna_retorno} base de facturación con info extraída de los XML's")
-            df_database = pd.read_excel(xlsx_database)
-            df_database = (
-                df_database
-                .drop_duplicates(subset='UUID', keep='first')
-                .reset_index(drop=True)
-            )
-            columns_totales_match = {'Folio': 'Folio'}
-            df_facturas[columna_poblar] = self.multi_column_lookup(
-                df_to_fill=df_facturas,
-                df_to_consult=df_database,
-                match_columns=columns_totales_match,
-                return_column=columna_retorno,
-                default_value=f'{columna_UUID} no localizado'
-            )
-            
-        # Cargar el archivo conservando las hojas
-        with pd.ExcelWriter(altas_path, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
-            df_entregas_o_altas.to_excel(writer, sheet_name=altas_sheet, index=False)
+        print(f"🔎 Total PDFs indexados: {total_indexed}")
 
-        print("\nExcel generado de facturas generado exitosamente\n")
+        if total_indexed == 0:
+            print("❌ No se indexó ningún PDF. Revisa rutas/permiso de Dropbox/drive.")
+            return
 
-    def multi_column_lookup(self, df_to_fill, df_to_consult, match_columns: dict, return_column, default_value='sin match'):
-        """
-        Realiza búsqueda con múltiples columnas y retorna valor o advertencias
-        Args:
-            df_to_fill (pd.DataFrame): DataFrame que queremos llenar.
-            df_to_consult (pd.DataFrame): DataFrame que consultamos.
-            match_columns (dict): {col_df_to_fill: col_df_to_consult} pares de columnas para hacer match.
-            return_column (str): Columna en df_to_consult con el valor a traer.
-            default_value (any): Valor si no hay coincidencia.
-        Returns:
-            pd.Series: Valores para poblar la columna deseada.
-        """
+        # (Debug opcional) mostrar algunos nombres para validar
+        print("🧪 Ejemplos de PDFs indexados:")
+        for name, path in pdf_index[:min(5, len(pdf_index))]:
+            print(f"   - {name}")
 
-        if not isinstance(df_to_consult, pd.DataFrame):
-            raise TypeError(f"El argumento 'df_to_consult' debe ser un DataFrame, se recibió: {type(df_to_consult)}")
+        # --- Buscar por prefijo y copiar ---
+        expected = len(pdf_files_list)
+        found = 0
+        not_found = []
+        duplicates = {}
 
-        result_list = []
-        message_falta_liga = 'Renglones del dataframe a llenar sin filtro en el dataframe a consultar'
-        ligas_duplicadas = 0
-        ligas_vacías = 0
-        for _, row in df_to_fill.iterrows():
-            # Construir filtro booleano dinámico
-            mask = pd.Series([True] * len(df_to_consult))
+        for raw_folio in pdf_files_list["Folio"].astype(str):
+            folio = raw_folio.strip().lower()  # normalizar
+            matched_paths = [p for (name, p) in pdf_index if name.startswith(folio)]
 
-            for source_col, consult_col in match_columns.items():
-                mask &= df_to_consult[consult_col] == row[source_col]
+            if matched_paths:
+                # Si hay más de uno, reportar duplicados y tomar el primero
+                if len(matched_paths) > 1:
+                    duplicates[raw_folio] = matched_paths[:5]  # guarda hasta 5 para no saturar consola
 
-            filtered = df_to_consult[mask]
-
-            if filtered.empty:
-                result_list.append(default_value)
-                print("\tEncontramos renglones sin poder ligar")
-                ligas_vacías += 1
-            elif len(filtered) > 1:
-                resultados_duplicados = ", ".join(filtered[return_column].astype(str).tolist())
-                result_list.append(f'Peligro: 2 resultados {resultados_duplicados}')
-                ligas_duplicadas += 1
+                src = matched_paths[0]
+                dst = os.path.join(invoice_temporal_files, f"{raw_folio}.pdf")
+                try:
+                    shutil.copy2(src, dst)
+                    print(f"✔ Copiado: {raw_folio} -> {dst}")
+                    found += 1
+                except Exception as e:
+                    print(f"❌ Error copiando {src} -> {dst}: {e}")
             else:
-                result_list.append(filtered.iloc[0][return_column])
-        success_message = "✅ Se ligaron el 100% de los renglones y no hubo duplicados."
-        if ligas_duplicadas == 0 and ligas_vacías == 0:
-            print(f"{'*'*len(success_message)}\n{success_message}\n{'*'*len(success_message)}")
-        elif ligas_duplicadas == 0 and ligas_vacías > 0:
-            print("⚠️ Hay renglones que no se pudieron llenar con el dataframe consultado.")
-        elif ligas_duplicadas > 0 and ligas_vacías == 0:
-            print("⚠️ Hay renglones para los que se encontraron más de un resultado en el dataframe de consulta.")
-        else:
-            print("⚠️ Hay renglones vacíos y renglones con duplicados.")
+                not_found.append(raw_folio)
 
-        return pd.Series(result_list, index=df_to_fill.index)
+        # --- Summary ---
+        print("\n--- Resumen ---")
+        print(f"Expected: {expected}")
+        print(f"Found:    {found}")
+        if duplicates:
+            print(f"⚠️ Duplicados detectados ({len(duplicates)} folios). Se usó el primero encontrado:")
+            for fol, paths in duplicates.items():
+                print(f"   · {fol}:")
+                for p in paths:
+                    print(f"      - {p}")
+        if not_found:
+            print(f"Not found ({len(not_found)}): {not_found}")
+        self.extract_estatus_pdf()
 
-    def correccion_types(self, df_entregas_o_altas, df_facturas, info_types):
-        if info_types == 'IMSS': 
-            print(f"Iniciamos la corrección de tipos para el {info_types}")
-            print(f"Número de filas del dataframe facturas al iniciar {df_facturas.index.size}")
-            print(f"Número de filas del dataframe altas al iniciar {df_entregas_o_altas.index.size}")
-            # El siguiente paso es debido a la existencia de valores infinitos en la columna Referencia
-            df_facturas['Referencia'] = (
-                df_facturas['Referencia']
-                .replace([np.inf, -np.inf], np.nan)  # Inf  → NaN
-                .fillna(0)                           # NaN  → 0
-                .astype('int64')                     # ahora ya solo hay valores válidos para int64
-            )        
+    def extract_estatus_pdf(self):
+        acuses_sat = os.path.join(self.working_folder, "Estatus SAT", "Comprobantes SAT")
+        output_file = os.path.join(self.working_folder, "Estatus SAT", "estatus_facturas.xlsx")
 
-            df_facturas['Referencia'] = df_facturas['Referencia'].astype('int64')
-            df_entregas_o_altas['noOrden'] = df_entregas_o_altas['noOrden'].astype('int64')
-        
-            # (II.2) Duplicados. 
-            duplicados_facturas = df_facturas.duplicated().sum()
-            print(f"El dataframe facturas tiene {duplicados_facturas} filas duplicadas, vamos a removerlas\n")
-            df_facturas = df_facturas.drop_duplicates()
-            # (II.3) Ausentes
-            print("Removemos del dataframe facturas aquellas filas con Alta y Orden vacíos\n")
-            mask = ((df_facturas['Referencia'].isna() | (df_facturas['Referencia'] == 0)) & df_facturas['Alta'].isna())
-            print(f"Totales de las filas con Referencia y Alta ausentes = {mask.index.size}")
-            df_facturas = df_facturas.loc[~mask].reset_index(drop=True)
-            
-            df_facturas = (
-                df_facturas[~df_facturas['Total'].isin([0, '', ' '])]
-                .dropna(subset=['Total'])
-                .reset_index(drop=True)
-            )
+        list_pdf_files = [f for f in os.listdir(acuses_sat) if f.lower().endswith(".pdf")]
 
-            return df_entregas_o_altas, df_facturas
+        if not list_pdf_files:
+            print("❌ No se encontraron PDFs en:", acuses_sat)
+            return
 
-        else: 
-            print("no considerado aún")
+        results = []
+
+        for pdf_file in list_pdf_files:
+            pdf_path = os.path.join(acuses_sat, pdf_file)
+            try:
+                reader = PdfReader(pdf_path)
+                text = ""
+                for page in reader.pages:
+                    text += page.extract_text() or ""
+
+                # Normalizar texto
+                clean_text = text.replace("\n", " ").replace("\r", " ")
+
+                # Regex tolerante: capturar entre &id= y &re=
+                match = re.search(r"&id=([\s\S]+?)&re=", clean_text, re.IGNORECASE)
+                uuid = None
+                if match:
+                    uuid = match.group(1)
+                    # limpiar espacios intermedios
+                    uuid = uuid.replace(" ", "").replace("\n", "").replace("\r", "")
+
+                # Estado
+                if "Cancelado" in clean_text:
+                    estado = "Cancelado"
+                elif "Vigente" in clean_text:
+                    estado = "Vigente"
+                else:
+                    estado = "Desconocido"
+
+                results.append({
+                    "uuid": uuid,
+                    "estado": estado,
+                    "filename": os.path.basename(pdf_file)
+                })
+
+            except Exception as e:
+                print(f"❌ Error procesando {pdf_file}: {e}")
+
+        # Guardar resultados
+        df = pd.DataFrame(results)
+        df.to_excel(output_file, index=False)
+
+        print(f"✔ Resultados guardados en {output_file}")
+        print(df.head())
+if __name__ == "__main__":
+    folder_root = os.getcwd()    
+    working_folder = os.path.join(folder_root, "Implementación")
+    config_path = os.path.join(working_folder, "config.yaml")
+    yaml_exists = os.path.exists(config_path)
+    if yaml_exists:
+        # Abrir y cargar el contenido YAML en un diccionario
+        with open(config_path, 'r', encoding='utf-8') as f:
+            data_access = yaml.safe_load(f)
+        print(f"✅ Archivo YAML cargado correctamente: {os.path.basename(config_path)}")
+    facturas = 'PAQS_INSABI'
+    # Inicializar web driver manager (sin crear el driver aún)
+    app = FACTURAS(working_folder, data_access)
+    app.cargar_facturas(facturas)
+    

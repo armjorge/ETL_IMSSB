@@ -134,15 +134,13 @@ class DownloadedFilesManager:
                     df = _clean_df(df)
                     if df is not None:
                         dataframes.append(df)
-
                 elif file_type == 'xlsx':
-                    # XLSX: leer TODAS las hojas y agregar cada una como DF
-                    xls = pd.ExcelFile(file)   # deja que pandas escoja engine disponible
-                    for sheet in xls.sheet_names:
-                        dfx = pd.read_excel(xls, sheet_name=sheet, dtype=str)
-                        dfx = _clean_df(dfx)
-                        if dfx is not None:
-                            dataframes.append(dfx)
+                    with pd.ExcelFile(file) as xls:
+                        for sheet in xls.sheet_names:
+                            dfx = pd.read_excel(xls, sheet_name=sheet, dtype=str)
+                            dfx = _clean_df(dfx)
+                            if dfx is not None:
+                                dataframes.append(dfx)
 
                 elif file_type == 'xls':
                     # XLS: tu función especializada (puede devolver DF o dict de DFs)

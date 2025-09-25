@@ -83,6 +83,7 @@ class DataIntegration:
 
         return invoice_df
 
+
     def populate_df(self, left_df, right_df, query_dict):
         """
         Pobla columnas en left_df a partir de right_df según query_dict.
