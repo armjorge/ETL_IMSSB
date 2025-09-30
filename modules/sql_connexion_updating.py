@@ -109,14 +109,17 @@ class SQL_CONNEXION_UPDATING:
         table_name = 'imssb_historico'
         sheet_name = 'CAMUNDA'
         # --- Transformaciones de tipos ---
-        date_columns   = ['fecha_autorizacion','fecha_limite_entrega']                # fechas dd/mm/yyyy
+        date_columns   = ['fecha_autorizacion','fecha_limite_entrega']# fechas dd/mm/yyyy
         int_columns    = ['precio_unitario','cantidad_solicitada']        # enteros
         float_columns  = ['Importe', 'PENA']  # numéricos decimales
         string_columns = ['numero_orden_suministro', 'numero_contrato']
-        nan_columns = []        
+        nan_columns = []
+        source_path = self.integration_path
+        file_type = "*.xlsx"
+        
         # Buscar todos los Excel en la carpeta de integración
         xlsx_files = [
-            f for f in glob.glob(os.path.join(self.integration_path, "*.xlsx"))
+            f for f in glob.glob(os.path.join(source_path, file_type))
             if not os.path.basename(f).startswith("~")
         ]
         if not xlsx_files:
@@ -129,7 +132,7 @@ class SQL_CONNEXION_UPDATING:
             try:
                 df = pd.read_excel(file, sheet_name=sheet_name, engine="openpyxl")
                 df_list.append(df)
-                print(f"✅ Leído 'df_altas' de {os.path.basename(file)} con {len(df)} filas")
+                print(f"✅ Leído {sheet_name} de {os.path.basename(file)} con {len(df)} filas")
             except Exception as e:
                 print(f"⚠️ No se pudo leer 'df_altas' de {file}: {e}")
 
