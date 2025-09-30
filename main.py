@@ -45,7 +45,7 @@ class ETL_APP:
         self.facturas_manager = FACTURAS(self.working_folder, self.data_access,self.helpers)
         self.downloaded_files_manager = DownloadedFilesManager(self.working_folder, self.data_access)
         self.data_integration = DataIntegration(self.working_folder, self.data_access, self.integration_path, self.helpers)
-        self.sql_integration = SQL_CONNEXION_UPDATING(self.working_folder, self.data_access)
+        self.sql_integration = SQL_CONNEXION_UPDATING(self.integration_path, self.data_access)
         self.data_warehouse = DataWarehouse(self.data_access, self.working_folder)
         
         print("✅ Inicialización completada")
@@ -106,10 +106,13 @@ class ETL_APP:
                 self.downloaded_files_manager.manage_downloaded_files(temporal_orders_path, camunda_steps)
 
             elif choice == "2":
-                self.downloaded_files_manager.manage_downloaded_files(temporal_sagi_path, sagi_steps)   
+
                 exito_descarga_sagi = self.orders_manager.execute_download_session(temporal_sagi_path, sagi_steps)
                 if exito_descarga_sagi:
                     print("✅ Descarga de SAGI completada")
+                    self.downloaded_files_manager.manage_downloaded_files(temporal_sagi_path, sagi_steps)   
+
+
                 else:
                     print("⚠️ Descarga de SAGI incompleta con archivos pendientes")
 
@@ -123,17 +126,11 @@ class ETL_APP:
                     print("⚠️ Carga de facturas pendientes")
             elif choice == "4":
                 print("🔄 Integrando información...")
-                ordenes_fuente = orders_path
-                facturas_fuente = FACTURAS_processed_path
-                sagi_fuente = accounts_path
-                logistica_fuente = logistica_path  # En desarrollo
-                self.data_integration.integrar_datos(ordenes_fuente, facturas_fuente, sagi_fuente, logistica_fuente)
+                self.data_integration.integrar_datos()
 
             elif choice == "5":
-                print("🔄 Actualizando SQL (Longitudinal)")
-                self.update_sql_historico()
-                print("Generación de agrupaciones y reportes")
-
+                print("🔄 Actualizando SQL")
+                self.sql_integration.load_menu()
 
             elif choice == "6":
                 print("Ejecutando consultas SQL...")
@@ -148,23 +145,24 @@ class ETL_APP:
                 self.data_warehouse.Business_Intelligence()
 
             elif choice == 'auto':
-                exito_descarga_altas = self.orders_manager.descargar_altas(temporal_altas_path)
-                if exito_descarga_altas:
-                    exito_descarga_prei = self.prei_manager.descargar_PREI(temporal_prei_path)
-                    self.downloaded_files_manager.manage_downloaded_files(temporal_altas_path)
-                    print("✅ Descarga de Órdenes completada")
-                    if exito_descarga_prei:
-                        print("✅ Descarga de PREI completada")
-                        self.downloaded_files_manager.manage_downloaded_files(temporal_prei_path)
-                        exito_facturas = self.facturas_manager.cargar_facturas()
-                        if exito_facturas:
-                            print("✅ Carga de facturas completada")
-                        self.data_integration.integrar_datos(PREI_processed_path, ALTAS_processed_path, FACTURAS_processed_path)
-                        print("✅ Integración completada")
-                        self.update_sql_historico()
-                        self.sql_integration.run_queries(queries_folder)
-                    else:
-                        print("⚠️ No pudimos continuar con el proceso ETL en automático")
+                # CAMUNDA
+                exito_descarga_ordenes = self.orders_manager.execute_download_session(temporal_orders_path, camunda_steps)
+                self.downloaded_files_manager.manage_downloaded_files(temporal_orders_path, camunda_steps)
+
+                print(f"✅ Descarga de {camunda_steps}")
+                # SAGI
+                exito_descarga_sagi = self.orders_manager.execute_download_session(temporal_sagi_path, sagi_steps)
+                self.downloaded_files_manager.manage_downloaded_files(temporal_sagi_path, sagi_steps)   
+
+                print("✅ Descarga de SAGI completada")
+                # Facturas
+                exito_facturas = self.facturas_manager.cargar_facturas(facturas)
+                print("✅ Descarga de Facturas completada")
+                self.data_integration.integrar_datos()
+                self.load_menu()
+                self.sql_integration.run_queries(queries_folder)
+                
+
             elif choice == "0":
                 print("Saliendo de la aplicación...")
                 break

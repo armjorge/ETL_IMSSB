@@ -2,6 +2,8 @@ import pandas as pd
 import datetime 
 import os
 import glob
+import re
+import json
 
 
 
@@ -12,75 +14,202 @@ class DataIntegration:
         self.integration_path = integration_path 
         self.order_df = None
         self.helpers = helpers
+        self.accounts=os.path.join(self.working_folder, "SAGI")
+        self.logistica=os.path.join(self.working_folder, "Logística")
+        self.facturas_path=os.path.join(self.working_folder, "Facturas")
+        self.ordenes_path=os.path.join(self.working_folder, "Camunda")
+        self.folders = {
+            "SAGI": self.accounts,
+            #"Logistica": self.logistica,
+            "Facturas": self.facturas_path,
+            "Ordenes": self.ordenes_path
+            }
+        self.record_file=os.path.join(self.integration_path,"processed_file.db")   
 
-    def integrar_datos(self, ordenes_fuente, facturas_fuente, tesoreria_fuente, logistica_fuente):
-        print("\n🔗 Iniciando proceso de TRANSFORMACIÓN de datos...")
+    def generate_file_groups(self):
+        print(self.folders)
+        from datetime import datetime, timedelta
+        print(f"🔍 Buscando archivos más recientes...")
+        # Regex para extraer yyyy-mm-dd-hh
+        ts_pattern = re.compile(r"^(\d{4}-\d{2}-\d{2}-\d{2})")
+        
+        # 1. Escanear todos los archivos
+        all_files = []
+        for cat, folder in self.folders.items():
+            if not os.path.exists(folder):
+                continue
+            for f in os.listdir(folder):
+                if f.endswith(".xlsx"):
+                    m = ts_pattern.match(f)
+                    if m:
+                        ts = datetime.strptime(m.group(1), "%Y-%m-%d-%H")
+                        all_files.append((ts, cat, os.path.join(folder, f)))
 
-        print(f"🔍 Buscando archivos más recientes para órdenes, facturas, información tesorería y logística...")
+        # 2. Ordenar por timestamp
+        all_files.sort(key=lambda x: x[0])
 
-        newest_orders_file, orders_date = self.get_newest_file(ordenes_fuente, "*.xlsx")
-        newest_logistic_file, logistic_date = self.get_newest_file(logistica_fuente, "*.xlsx")
-        newest_sagi_file, prei_date = self.get_newest_file(tesoreria_fuente, "*.xlsx")
-        newest_facturas_file, facturas_date = self.get_newest_file(facturas_fuente, "*.xlsx")
-        self.order_df = pd.read_excel(newest_orders_file) if newest_orders_file else pd.DataFrame()
-        self.order_df['Importe'] = self.order_df['precio_unitario'].astype(float) * self.order_df['cantidad_solicitada'].astype(float)
-        raw_invoice_df = pd.read_excel(newest_facturas_file) if newest_facturas_file else pd.DataFrame()
-        debug_ref = "IMB-23-02-2025-23026576-U013"
-        print(f"Columnas de invoice_df{raw_invoice_df.columns}")
-        if "Referencia" in raw_invoice_df.columns:
-            
-            if debug_ref in raw_invoice_df["Referencia"].astype(str).values:
-                print(f"✅ {debug_ref} FOUND in raw_invoice_df, rows: {raw_invoice_df[raw_invoice_df['Referencia'].astype(str) == debug_ref].shape[0]}")
+        # 3. Agrupar con ventana de 2 horas
+        groups = []
+        current = []
+        for ts, cat, path in all_files:
+            if not current:
+                current.append((ts, cat, path))
             else:
-                print(f"❌ {debug_ref} NOT FOUND in raw_invoice_df. Available unique sample: {raw_invoice_df['Referencia'].astype(str).dropna().unique()[:10]}")
+                delta = ts - current[0][0]
+                if delta <= timedelta(hours=2):
+                    current.append((ts, cat, path))
+                else:
+                    groups.append(current)
+                    current = [(ts, cat, path)]
+        if current:
+            groups.append(current)
+
+        # 4. Formar all_groups y complete_groups
+        all_groups = []
+        complete_groups = []
+        for g in groups:
+            min_ts = min(x[0] for x in g)
+            max_ts = max(x[0] for x in g)
+            group_id = f"{min_ts.strftime('%Y-%m-%d-%H')}_{max_ts.strftime('%H')}"
+            record = {"group_id": group_id}
+            for cat in self.folders.keys():
+                record[cat] = ""
+            for ts, cat, path in g:
+                record[cat] = path
+            all_groups.append(record)
+
+            if all(record[cat] for cat in self.folders.keys()):
+                complete_groups.append(record)
+
+        print("📂 all_groups encontrados:", len(all_groups))
+        print("✅ complete_groups completos:", len(complete_groups))
+       # 🔎 Analizar si los date-hour coinciden dentro de cada grupo
+        exact_match_count = 0
+        different_count = 0
+        for g in all_groups:
+            hours = []
+            for cat in self.folders.keys():
+                if g[cat]:
+                    # Tomamos solo yyyy-mm-dd-hh del path
+                    fname = os.path.basename(g[cat])
+                    ts_prefix = fname[:13]  # YYYY-MM-DD-HH
+                    hours.append(ts_prefix)
+            if hours and all(h == hours[0] for h in hours):
+                exact_match = True
+                exact_match_count += 1
+            else:
+                exact_match = False
+                different_count += 1
+            print(f"Grupo {g['group_id']} → same_datehour == {exact_match}")
+
+        print(f"📊 Grupos con misma fecha-hora exacta: {exact_match_count}")
+        print(f"📊 Grupos con diferencias de hora: {different_count}")
+        complete_groups.sort(
+            key=lambda x: x['group_id'][:10],  # yyyy-mm-dd
+            reverse=True
+        )
+
+        return complete_groups
+             
+    def integrar_datos(self):
+        print("\n🔗 Iniciando proceso de TRANSFORMACIÓN de datos...")
+        group_preffix_file = self.generate_file_groups()
+
+        for group in group_preffix_file:
+            # Cargamos dataframes 
+            #df_logistica = pd.read_excel(group['Logistica'])    if group['Logistica']    else pd.DataFrame()
+            raw_accounts_df     = pd.read_excel(group['SAGI'])     if group['SAGI']     else pd.DataFrame()
+            raw_invoice_df = pd.read_excel(group['Facturas']) if group['Facturas'] else pd.DataFrame()
+            self.order_df  = pd.read_excel(group['Ordenes'])  if group['Ordenes']  else pd.DataFrame()
+            # Generamos fecha de grupo de archivos 
+            prefix = group['group_id'].split("_")[0]   # "2025-09-19-08"
+            dt = datetime.datetime.strptime(prefix, "%Y-%m-%d-%H")
+            group_date = dt.replace(minute=0, second=0, microsecond=0)
+
+            #-- sECCIÓN PARA 
+            self.order_df['Importe'] = self.order_df['precio_unitario'].astype(float) * self.order_df['cantidad_solicitada'].astype(float)
+            # Versiones limpias de facturas, SAGI, órdenes se mantiene igual. 
+            invoice_df = self.clean_invoice_df(raw_invoice_df)
+            accounts_df = self.clean_accounts_df(raw_accounts_df, invoice_df)    
+            # Carga de logística
+            yaml_penalties_key = 'PENAS'
+            # Carga de penas convencionales
+            penalties_df = self.helpers.load_and_concat(self.data_access.get(yaml_penalties_key))
+            
+            # Unión de Órdenes con facturas        
+            print(self.order_df['numero_orden_suministro'].nunique())
+            print(self.order_df.shape)
+            orders_invoice_join = {
+                'left': ['numero_orden_suministro'],
+                'right': ['Referencia'],
+                'return': ['UUID', 'Folio']
+            }        
+            self.order_df = self.populate_df(self.order_df, invoice_df, orders_invoice_join)
+            orders_sagi_join = {'left': ['numero_orden_suministro'], 'right': ['Orden de suministro'], 'return': ['Estado de la factura']}
+            self.order_df = self.populate_df(self.order_df, accounts_df, orders_sagi_join)
+            # Unión con penas convencionales
+            orders_penalties_join = {
+                        'left': ['numero_orden_suministro'],
+                        'right': ['ORDEN DE SUMINISTRO'],
+                        'return': ['PENA', 'OFICIO']
+                    }              
+            self.order_df = self.populate_df(self.order_df, penalties_df, orders_penalties_join)
+            
+            self.order_df['PENA'] = self.order_df['PENA'] = pd.to_numeric(self.order_df['PENA'], errors='coerce')
+            self.order_df['file_date']= group_date
+            # Unión con datos logísticos.
+
+            # Guardar archivo de integración
+            output_file_name = f'{prefix}_Integracion INSABI.xlsx' 
+            output_file_path = os.path.join(self.integration_path, output_file_name)
+            self.save_if_modified(output_file_path, {
+                "CAMUNDA": self.order_df,
+                "SAGI": accounts_df,
+                "FACTURAS": invoice_df,
+                #"LOGÍSTICA": df_logistica
+            }, self.record_file)
+                       
+    def save_if_modified(self, output_file_path, df_dict, record_file):
+        """
+        Guarda múltiples DataFrames en un Excel solo si el archivo destino
+        no tiene la misma fecha de modificación registrada.
+        """
+
+        # 1. Cargar registro si existe
+        if os.path.exists(record_file):
+            with open(record_file, "r") as f:
+                record = json.load(f)
         else:
-            print("⚠️ Column 'Referencia' not found in raw_invoice_df")
-        # De inmediato quiero agregar los 'Orden de suministro' faltantes si es que existen
-        raw_accounts_df = pd.read_excel(newest_sagi_file) if newest_sagi_file else pd.DataFrame()
-        # Versiones limpias de facturas, SAGI, órdenes se mantiene igual. 
-        invoice_df = self.clean_invoice_df(raw_invoice_df)
-        accounts_df = self.clean_accounts_df(raw_accounts_df, invoice_df)    
-        # Carga de logística
-        logistic_df = pd.read_excel(newest_logistic_file) if newest_logistic_file else pd.DataFrame()
-        yaml_penalties_key = 'PENAS'
-        # Carga de penas convencionales
-        penalties_df = self.helpers.load_and_concat(self.data_access.get(yaml_penalties_key))
-        
-        # Unión de Órdenes con facturas        
-        print(self.order_df['numero_orden_suministro'].nunique())
-        print(self.order_df.shape)
-        orders_invoice_join = {
-            'left': ['numero_orden_suministro'],
-            'right': ['Referencia'],
-            'return': ['UUID', 'Folio']
-        }        
-        self.order_df = self.populate_df(self.order_df, invoice_df, orders_invoice_join)
-        orders_sagi_join = {'left': ['numero_orden_suministro'], 'right': ['Orden de suministro'], 'return': ['Estado de la factura']}
-        self.order_df = self.populate_df(self.order_df, accounts_df, orders_sagi_join)
-        # Unión con penas convencionales
-        orders_penalties_join = {
-                    'left': ['numero_orden_suministro'],
-                    'right': ['ORDEN DE SUMINISTRO'],
-                    'return': ['PENA', 'OFICIO']
-                }              
-        self.order_df = self.populate_df(self.order_df, penalties_df, orders_penalties_join)
-        
-        self.order_df['PENA'] = self.order_df['PENA'] = pd.to_numeric(self.order_df['PENA'], errors='coerce')
+            record = {}
 
-        # Unión con datos logísticos.
+        file_key = os.path.abspath(output_file_path)
+        last_mod_time = None
 
-        # Guardar archivo de integración
+        if os.path.exists(output_file_path):
+            last_mod_time = os.path.getmtime(output_file_path)
 
-        today = datetime.datetime.now()
-        today_string_file = today.strftime('%Y-%m-%d %H') + 'h_integracion.xlsx'
-        os.makedirs(self.integration_path, exist_ok=True)
-        
-        with pd.ExcelWriter(os.path.join(self.integration_path, today_string_file)) as writer:
-            self.order_df.to_excel(writer, sheet_name='order_df', index=False)
-            invoice_df.to_excel(writer, sheet_name='invoice_df', index=False)
-            accounts_df.to_excel(writer, sheet_name='accounts_df', index=False)
-            logistic_df.to_excel(writer, sheet_name='logistic_df', index=False)
-        print(f"✅ Archivo de integración guardado en {self.integration_path} como {today_string_file}")
+        # 2. Verificar si ya está registrado y coincide
+        if file_key in record and last_mod_time is not None:
+            if abs(record[file_key] - last_mod_time) < 1:  # tolerancia de 1 segundo
+                mod_dt = datetime.datetime.fromtimestamp(last_mod_time)
+                print(f"⏩ Archivo '{os.path.basename(output_file_path)}' no ha cambiado desde {mod_dt}, no se sobrescribe.")
+                return
+
+        # 3. Escribir el archivo
+        with pd.ExcelWriter(output_file_path, engine='openpyxl') as writer:
+            for name, df in df_dict.items():
+                if not df.empty:
+                    df.to_excel(writer, sheet_name=name, index=False)
+                    print(f"✅ Hoja '{name}' guardada con {len(df)} filas")
+
+        print(f"\n🎉 ¡Integración completada exitosamente!")
+        print(f"📁 Archivo guardado en: {os.path.basename(output_file_path)}")
+
+        # 4. Actualizar registro
+        new_mod_time = os.path.getmtime(output_file_path)
+        record[file_key] = new_mod_time
+        with open(record_file, "w") as f:
+            json.dump(record, f)
 
     def clean_accounts_df(self, accounts_df, invoice_df):
         accounts_df = accounts_df[accounts_df['Estado de la factura'] != 'Cancelado']
