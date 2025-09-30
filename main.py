@@ -4,7 +4,6 @@ import glob
 # Módulos propios
 from modules.data_warehouse import DataWarehouse
 from modules.config import ConfigManager
-from modules.helpers import message_print, create_directory_if_not_exists
 from modules.web_automation_driver import WebAutomationDriver
 from modules.orders_management import orders_management
 from modules.payments_status_management import ACCOUNTS_MANAGEMENT
@@ -12,7 +11,7 @@ from modules.facturas import FACTURAS
 from modules.downloaded_files_manager import DownloadedFilesManager
 from modules.data_integration import DataIntegration
 from modules.sql_connexion_updating import SQL_CONNEXION_UPDATING
-
+from modules.helpers import HELPERS
 
 class ETL_APP:
     def __init__(self):
@@ -24,21 +23,6 @@ class ETL_APP:
         self.integration_path = os.path.join(self.working_folder, "Integración")
         
         
-    def update_sql_historico(self):
-        print("🔄 Integrando información...")
-        print("Fuente de las altas históricas")
-        df_final, esquema, tabla = self.altas_historicas()
-        print(df_final.head(2))
-        try:
-            df_final[['fechaAltaTrunc', 'fpp']] = df_final[['fechaAltaTrunc', 'fpp']].apply(pd.to_datetime, errors='coerce', format='%d/%m/%Y')
-            df_final = self.sql_integration.sql_column_correction(df_final)         
-            self.sql_integration.update_sql(df_final, esquema, tabla)
-            # Cambio a diccionario
-            print(f"✅ Actualización {esquema}.{tabla} completada")
-        except Exception as e:
-            print(f"❌ Error durante la actualización: {e}")
-        
-        print("✅ Integración completada")    
           
     def initialize(self):
         """Inicializa los managers principales"""
@@ -52,74 +36,20 @@ class ETL_APP:
             return False
         
         # Inicializar web driver manager (sin crear el driver aún)
+        self.helpers = HELPERS()
         downloads_path = os.path.join(self.working_folder)
         self.web_driver_manager = WebAutomationDriver(downloads_path)
         # Inicializar SAI manager
         self.orders_manager = orders_management(self.working_folder, self.web_driver_manager, self.data_access)
         self.prei_manager = ACCOUNTS_MANAGEMENT(self.working_folder, self.web_driver_manager, self.data_access)
-        self.facturas_manager = FACTURAS(self.working_folder, self.data_access)
+        self.facturas_manager = FACTURAS(self.working_folder, self.data_access,self.helpers)
         self.downloaded_files_manager = DownloadedFilesManager(self.working_folder, self.data_access)
-        self.data_integration = DataIntegration(self.working_folder, self.data_access, self.integration_path)
+        self.data_integration = DataIntegration(self.working_folder, self.data_access, self.integration_path, self.helpers)
         self.sql_integration = SQL_CONNEXION_UPDATING(self.working_folder, self.data_access)
         self.data_warehouse = DataWarehouse(self.data_access, self.working_folder)
+        
         print("✅ Inicialización completada")
         return True
-    def altas_historicas(self):
-        print("🔄 Actualizando información en SQL: longitudinal en el tiempo")
-
-        # Buscar archivos .xlsx en la carpeta de integración
-
-        integration_files = glob.glob(os.path.join(self.integration_path, "*.xlsx"))
-        schema = 'eseotres_warehouse'
-        table_name = 'altas_historicas'       
-        
-
-        # Columnas esperadas: base + integración (sin duplicados, preservando orden)
-        base_cols = list(self.data_access['columns_IMSS_altas'])
-        columnas_integracion = ['file_date', 'UUID', 'Estado C.R.']
-        columnas = list(dict.fromkeys(base_cols + columnas_integracion))
-
-        # Debug
-        print(f"🔍 Carpeta de integración: {self.integration_path}")
-        print(f"🗂️ Archivos encontrados: {len(integration_files)}")
-        print(f"🧩 Columnas esperadas ({len(columnas)}): {columnas}")
-
-        # Filtrar: aceptar archivos que contengan al menos todas las columnas esperadas
-        valid_files = []
-        for path in integration_files:
-            try:
-                cols = list(pd.read_excel(path, nrows=0).columns)
-                if set(columnas).issubset(set(cols)):
-                    valid_files.append(path)
-                else:
-                    missing = [c for c in columnas if c not in cols]
-                    extra = [c for c in cols if c not in columnas]
-                    print(f"⚠️ {os.path.basename(path)} faltan: {missing} | extras: {extra}")
-            except Exception as e:
-                print(f"⚠️ No se pudo leer {os.path.basename(path)}: {e}")
-
-        if not valid_files:
-            print("❌ No hay archivos válidos con columnas esperadas")
-            return pd.DataFrame(columns=columnas)
-
-        # Cargar cada Excel, quedarnos solo con las columnas esperadas y concatenar
-        partes = []
-        for p in valid_files:
-            try:
-                df = pd.read_excel(p)
-                df = df.loc[:, columnas]  # solo esperadas, en el orden definido
-                partes.append(df)
-            except Exception as e:
-                print(f"⚠️ Error leyendo {os.path.basename(p)}: {e}")
-
-        if not partes:
-            print("❌ No se pudo cargar ningún archivo válido")
-            return pd.DataFrame(columns=columnas)
-
-        df_final = pd.concat(partes, ignore_index=True)
-        print(f"✅ {len(valid_files)} archivos válidos concatenados: {len(df_final)} filas")
-        return df_final, schema, table_name
-
         
     def run(self):
         """Ejecuta el menú principal de la aplicación"""
@@ -131,20 +61,22 @@ class ETL_APP:
         orders_path = os.path.join(self.working_folder, "Camunda")
         temporal_orders_path = os.path.join(orders_path, "Temporal downloads")
         temporal_sagi_path = os.path.join(self.working_folder, "SAGI", "Temporal downloads")
-        create_directory_if_not_exists(temporal_orders_path)
+        os.makedirs(temporal_orders_path, exist_ok=True)
         accounts_path = os.path.join(self.working_folder, "SAGI")
         temporal_accounts_path = os.path.join(accounts_path, 'Temporal downloads')
-        create_directory_if_not_exists(temporal_accounts_path)
+        os.makedirs(temporal_accounts_path, exist_ok=True)
         logistica_path = os.path.join(self.working_folder, "Logística")
-        create_directory_if_not_exists(logistica_path)
+        os.makedirs(logistica_path, exist_ok=True)
         #ORDERS_processed_path = os.path.join(self.working_folder, "SAI", "Orders_Procesados")
         FACTURAS_processed_path = os.path.join(self.working_folder, "Facturas")
         PREI_processed_path = os.path.join(self.working_folder, "PREI", "PREI_files")
         ALTAS_processed_path = os.path.join(self.working_folder, "SAI", "SAI Altas_files")
         queries_folder = os.path.join(self.folder_root, "sql_queries")
+
+
         while True:
             print("\n" + "="*50)
-            choice = input(message_print(
+            choice = input(
 
                 "Elige una opción:\n"
                 "EXTRACCIÓN\n"
@@ -160,7 +92,7 @@ class ETL_APP:
                 "\t7) Inteligencia de negocios\n"
                 "\tauto Ejecutar todo automáticamente\n"
                 "\t0) Salir"
-            )).strip()
+            ).strip()
         
             if choice == "1":
                 # Probar fusión de archivos descargados 

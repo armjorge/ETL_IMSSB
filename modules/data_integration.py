@@ -2,15 +2,16 @@ import pandas as pd
 import datetime 
 import os
 import glob
-from modules.helpers import message_print, create_directory_if_not_exists
+
 
 
 class DataIntegration:
-    def __init__(self, working_folder, data_access, integration_path):
+    def __init__(self, working_folder, data_access, integration_path, helpers=None):
         self.working_folder = working_folder
         self.data_access = data_access  
         self.integration_path = integration_path 
         self.order_df = None
+        self.helpers = helpers
 
     def integrar_datos(self, ordenes_fuente, facturas_fuente, tesoreria_fuente, logistica_fuente):
         print("\n🔗 Iniciando proceso de TRANSFORMACIÓN de datos...")
@@ -23,33 +24,57 @@ class DataIntegration:
         newest_facturas_file, facturas_date = self.get_newest_file(facturas_fuente, "*.xlsx")
         self.order_df = pd.read_excel(newest_orders_file) if newest_orders_file else pd.DataFrame()
         self.order_df['Importe'] = self.order_df['precio_unitario'].astype(float) * self.order_df['cantidad_solicitada'].astype(float)
-        invoice_df = pd.read_excel(newest_facturas_file) if newest_facturas_file else pd.DataFrame()
+        raw_invoice_df = pd.read_excel(newest_facturas_file) if newest_facturas_file else pd.DataFrame()
+        debug_ref = "IMB-23-02-2025-23026576-U013"
+        print(f"Columnas de invoice_df{raw_invoice_df.columns}")
+        if "Referencia" in raw_invoice_df.columns:
+            
+            if debug_ref in raw_invoice_df["Referencia"].astype(str).values:
+                print(f"✅ {debug_ref} FOUND in raw_invoice_df, rows: {raw_invoice_df[raw_invoice_df['Referencia'].astype(str) == debug_ref].shape[0]}")
+            else:
+                print(f"❌ {debug_ref} NOT FOUND in raw_invoice_df. Available unique sample: {raw_invoice_df['Referencia'].astype(str).dropna().unique()[:10]}")
+        else:
+            print("⚠️ Column 'Referencia' not found in raw_invoice_df")
         # De inmediato quiero agregar los 'Orden de suministro' faltantes si es que existen
-        accounts_df = pd.read_excel(newest_sagi_file) if newest_sagi_file else pd.DataFrame()
-        accounts_df = self.clean_accounts_df(accounts_df, invoice_df)
-        invoice_df = self.clean_invoice_df(invoice_df)
-        
-        
+        raw_accounts_df = pd.read_excel(newest_sagi_file) if newest_sagi_file else pd.DataFrame()
+        # Versiones limpias de facturas, SAGI, órdenes se mantiene igual. 
+        invoice_df = self.clean_invoice_df(raw_invoice_df)
+        accounts_df = self.clean_accounts_df(raw_accounts_df, invoice_df)    
+        # Carga de logística
         logistic_df = pd.read_excel(newest_logistic_file) if newest_logistic_file else pd.DataFrame()
-
+        yaml_penalties_key = 'PENAS'
+        # Carga de penas convencionales
+        penalties_df = self.helpers.load_and_concat(self.data_access.get(yaml_penalties_key))
         
+        # Unión de Órdenes con facturas        
         print(self.order_df['numero_orden_suministro'].nunique())
         print(self.order_df.shape)
         orders_invoice_join = {
-            'left': ['numero_orden_suministro', 'Importe'],
-            'right': ['Referencia', 'Total'],
+            'left': ['numero_orden_suministro'],
+            'right': ['Referencia'],
             'return': ['UUID', 'Folio']
         }        
         self.order_df = self.populate_df(self.order_df, invoice_df, orders_invoice_join)
         orders_sagi_join = {'left': ['numero_orden_suministro'], 'right': ['Orden de suministro'], 'return': ['Estado de la factura']}
         self.order_df = self.populate_df(self.order_df, accounts_df, orders_sagi_join)
+        # Unión con penas convencionales
+        orders_penalties_join = {
+                    'left': ['numero_orden_suministro'],
+                    'right': ['ORDEN DE SUMINISTRO'],
+                    'return': ['PENA', 'OFICIO']
+                }              
+        self.order_df = self.populate_df(self.order_df, penalties_df, orders_penalties_join)
+        
+        self.order_df['PENA'] = self.order_df['PENA'] = pd.to_numeric(self.order_df['PENA'], errors='coerce')
+
         # Unión con datos logísticos.
 
         # Guardar archivo de integración
 
         today = datetime.datetime.now()
         today_string_file = today.strftime('%Y-%m-%d %H') + 'h_integracion.xlsx'
-        create_directory_if_not_exists(self.integration_path)
+        os.makedirs(self.integration_path, exist_ok=True)
+        
         with pd.ExcelWriter(os.path.join(self.integration_path, today_string_file)) as writer:
             self.order_df.to_excel(writer, sheet_name='order_df', index=False)
             invoice_df.to_excel(writer, sheet_name='invoice_df', index=False)
@@ -70,15 +95,48 @@ class DataIntegration:
         #print(account_df_nan.info())
         accounts_df['Total'] = accounts_df['Total'].replace('[\$,]', '', regex=True).astype(float)
         return accounts_df
-    def clean_invoice_df(self, invoice_df): 
+    
+
+    def clean_invoice_df(self, invoice_df):
+        print("🔍 Valores únicos en 'UUID Descripción':", invoice_df['UUID Descripción'].astype(str).unique()[:20])
+
+        debug_ref = "IMB-23-02-2025-23026576-U013"
+        if debug_ref in invoice_df['Referencia'].astype(str).values:
+            row_debug = invoice_df[invoice_df['Referencia'].astype(str) == debug_ref]
+            print("🔍 Row antes del filtro:\n", row_debug[['Referencia', 'Factura', 'UUID Descripción']])
+ 
         # Eliminar facturas no vigentes
         invoice_df = invoice_df[invoice_df['UUID Descripción'] == 'Vigente']
-        # Eliminar sin orden vinculada
-        #invoice_df = invoice_df[invoice_df['Referencia'].notna()]
-        invoice_df = invoice_df.drop_duplicates(subset=['Referencia', 'Factura'])
+
+        primary_keys = ['Referencia', 'Factura']
+
+        # Retiramos espacios de las llaves
+        for col in primary_keys:
+            invoice_df[col] = invoice_df[col].astype(str).str.replace(r"\s+", "", regex=True)
+
+        # 🔍 Debug: check if the problematic Referencia is still here
+        debug_ref = "IMB-23-02-2025-23026576-U013"
+        if debug_ref in invoice_df['Referencia'].values:
+            print(f"✅ {debug_ref} found BEFORE drop_duplicates, rows: {invoice_df[invoice_df['Referencia']==debug_ref].shape[0]}")
+        else:
+            print(f"❌ {debug_ref} missing BEFORE drop_duplicates")
+
+        # Drop duplicates
+        invoice_df = invoice_df.drop_duplicates(subset=primary_keys)
+
+        # 🔍 Debug again
+        if debug_ref in invoice_df['Referencia'].values:
+            print(f"✅ {debug_ref} survived AFTER drop_duplicates, rows: {invoice_df[invoice_df['Referencia']==debug_ref].shape[0]}")
+        else:
+            print(f"❌ {debug_ref} missing AFTER drop_duplicates")
+
         if self.order_df is not None: 
             print(f"🔍 Validando facturas VS órdenes de suministro...")
-            invoice_order_validation = {'left': ['Referencia', 'Total'], 'right': ['numero_orden_suministro', 'Importe'], 'return': ['orden_remision']}
+            invoice_order_validation = {
+                'left': ['Referencia', 'Total'],
+                'right': ['numero_orden_suministro', 'Importe'],
+                'return': ['orden_remision']
+            }
             invoice_df = self.populate_df(invoice_df, self.order_df, invoice_order_validation)
 
         return invoice_df
@@ -130,9 +188,24 @@ class DataIntegration:
             how="left",
             left_on=left_keys,
             right_on=right_keys,
-            suffixes=('', '_right')
+            suffixes=('', '_right'),
+            indicator=True
         )
 
+        # Métricas de match
+        left_unmatched = (merged["_merge"] == "left_only").sum()
+        right_unmatched = (merged["_merge"] == "right_only").sum()  # casi siempre 0 en left join
+
+        print(f"📊 No match in left_df → {left_unmatched} rows")
+        print(f"📊 No match in right_df → {right_unmatched} rows")
+
+        # Rellenar NaN con "no localizado"
+        for col in return_cols:
+            if col in merged.columns:
+                merged[col] = merged[col].fillna("no localizado")
+
+        # Eliminar columnas auxiliares de join (las right_keys y el indicador)
+        merged = merged.drop(columns=right_keys + ["_merge"], errors="ignore")
         # Rellenar NaN con "no localizado"
         for col in return_cols:
             if col in merged.columns:
@@ -140,6 +213,7 @@ class DataIntegration:
 
         # Eliminar columnas auxiliares de join (las right_keys)
         merged = merged.drop(columns=right_keys, errors="ignore")
+
 
         return merged
 

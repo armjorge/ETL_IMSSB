@@ -20,9 +20,10 @@ import re
 
 
 class FACTURAS:
-    def __init__(self, working_folder, data_access):
+    def __init__(self, working_folder, data_access, helpers):
         self.working_folder = working_folder
         self.data_access = data_access
+        self.helpers = helpers
         
     def cargar_facturas(self, facturas):
         facturas_folder = os.path.join(self.working_folder, "Facturas")
@@ -32,33 +33,7 @@ class FACTURAS:
         
         preffix = os.path.basename(facturas_folder)
         # DataFrame general vacío
-        df_general = pd.DataFrame()
-
-        # Iterar sobre los paquetes en PAQS_IMSS
-        for paq_name, paq_info in self.data_access.get(facturas, {}).items():
-            file_path = paq_info.get("file_path")
-            sheet = paq_info.get("sheet")
-            rows = paq_info.get("rows", [])
-
-            print(f"\n🔍 Procesando {paq_name}")
-
-            # 1. Intentar cargar archivo
-            if not os.path.exists(file_path):
-                print(f"⚠️ Archivo no encontrado: {file_path}")
-                continue
-            print(f"✅ Archivo encontrado: {file_path}")
-
-            try:
-                # 2. Intentar cargar hoja con columnas definidas
-                df = pd.read_excel(file_path, sheet_name=sheet, usecols=rows)
-                print(f"✅ Hoja '{sheet}' cargada con columnas {rows}")
-
-                # Concatenar a df_general
-                df_general = pd.concat([df_general, df], ignore_index=True)
-
-            except ValueError as e:
-                print(f"⚠️ Problema con la hoja o columnas: {e}")
-                continue
+        df_general = self.helpers.load_and_concat(self.data_access.get(facturas))
 
         # Guardar resultado en carpeta local
         if not df_general.empty:
