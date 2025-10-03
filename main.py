@@ -159,9 +159,8 @@ class ETL_APP:
                 exito_facturas = self.facturas_manager.cargar_facturas(facturas)
                 print("✅ Descarga de Facturas completada")
                 self.data_integration.integrar_datos()
-                self.load_menu()
+                self.sql_integration.load_menu()
                 self.sql_integration.run_queries(queries_folder)
-                
 
             elif choice == "0":
                 print("Saliendo de la aplicación...")
