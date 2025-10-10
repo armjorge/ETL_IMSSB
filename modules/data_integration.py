@@ -114,12 +114,45 @@ class DataIntegration:
     def integrar_datos(self):
         print("\n🔗 Iniciando proceso de TRANSFORMACIÓN de datos...")
         group_preffix_file = self.generate_file_groups()
-
+        # Load the record file to check for existing processed files
+        if os.path.exists(self.record_file):
+            with open(self.record_file, "r") as f:
+                record = json.load(f)
+        else:
+            record = {}
         for group in group_preffix_file:
+            # Compute output file path
+            prefix = group['group_id'].split("_")[0]   # "2025-09-19-08"
+            output_file_name = f'{prefix}_Integracion IMSSB.xlsx' 
+            output_file_path = os.path.join(self.integration_path, output_file_name)
+            file_key = os.path.abspath(output_file_path)
+
+            # Check if file exists and matches the record
+            skip_processing = False
+            if file_key in record and os.path.exists(output_file_path):
+                last_mod_time = os.path.getmtime(output_file_path)
+                if abs(record[file_key] - last_mod_time) < 1:  # tolerance of 1 second
+                    print(f"⏩ Grupo '{group['group_id']}' ya procesado y sin cambios, omitiendo procesamiento.")
+                    skip_processing = True
+
+            if skip_processing:
+                continue
+            # Procesamos grupos de archivos que no han sido procesados previamente.             
             # Cargamos dataframes 
             #df_logistica = pd.read_excel(group['Logistica'])    if group['Logistica']    else pd.DataFrame()
             raw_accounts_df     = pd.read_excel(group['SAGI'])     if group['SAGI']     else pd.DataFrame()
-            raw_invoice_df = pd.read_excel(group['Facturas']) if group['Facturas'] else pd.DataFrame()
+            if group.get("Facturas"):
+                with pd.ExcelFile(group["Facturas"]) as xls:
+                    sheets = xls.sheet_names
+                    print(f"📑 Available sheets in {group['Facturas']}: {sheets}")
+                    # Use "df_facturas" if exists, else the first sheet (index 0)
+                    invoice_sheet = "df_facturas" if "df_facturas" in sheets else 0
+                    raw_invoice_df = pd.read_excel(xls, sheet_name=invoice_sheet)
+                    raw_pagos = pd.read_excel(xls, sheet_name="df_pagos") if "df_pagos" in sheets else pd.DataFrame()
+            else:
+                raw_invoice_df = pd.DataFrame()
+                raw_pagos = pd.DataFrame()
+
             self.order_df  = pd.read_excel(group['Ordenes'])  if group['Ordenes']  else pd.DataFrame()
             # Generamos fecha de grupo de archivos 
             prefix = group['group_id'].split("_")[0]   # "2025-09-19-08"
@@ -157,6 +190,12 @@ class DataIntegration:
             
             self.order_df['PENA'] = self.order_df['PENA'] = pd.to_numeric(self.order_df['PENA'], errors='coerce')
             self.order_df['file_date']= group_date
+            ## Agregamos prefijo a columnas de penas convencionales
+            
+            # Unión con pagos
+            
+            
+
             # Unión con datos logísticos.
 
             # Guardar archivo de integración
@@ -166,9 +205,16 @@ class DataIntegration:
                 "CAMUNDA": self.order_df,
                 "SAGI": accounts_df,
                 "FACTURAS": invoice_df,
+                "PAGOS": raw_pagos,
                 #"LOGÍSTICA": df_logistica
             }, self.record_file)
-                       
+            ## Renombrar columnas para 
+            prefix_merged = "sagi_"
+            for c in orders_sagi_join["return"]:
+                if c in self.order_df.columns:
+                    self.order_df.rename(columns={c: f"{prefix_merged}{c}"}, inplace=True)            
+            
+
     def save_if_modified(self, output_file_path, df_dict, record_file):
         """
         Guarda múltiples DataFrames en un Excel solo si el archivo destino
@@ -345,90 +391,6 @@ class DataIntegration:
 
 
         return merged
-
-    def get_newest_file(self, path, pattern="*.xlsx"): 
-        """
-        Obtiene el archivo más reciente basado en la fecha en el nombre del archivo.
-        Formatos soportados: 
-        - YYYY-MM-DD-HH-nombre.xlsx (ej: 2025-08-25-13-PREI.xlsx)
-        - YYYY-MM-DD-HH_nombre.xlsx (ej: 2025-08-25-13_PAQ_IMSS.xlsx)
-        - YYYY-MM-DD-HH-nombre-extra.xlsx (ej: 2025-08-25-12-SAI Altas.xlsx)
-        """
-        today = datetime.date.today()
-        
-        if not os.path.exists(path):
-            print(f"⚠️ La carpeta {path} no existe")
-            return None, None
-        
-        # Obtener todos los archivos que coincidan con el patrón
-        files = glob.glob(os.path.join(path, pattern))
-        
-        if not files:
-            print(f"⚠️ No se encontraron archivos {pattern} en {os.path.basename(path)}")
-            return None, None
-        
-        newest_file = None
-        newest_date = None
-        
-        for file_path in files:
-            filename = os.path.basename(file_path)
-            
-            try:
-                # Dividir el nombre por guiones
-                parts = filename.split('-')
-                
-                # Necesitamos al menos 4 partes: YYYY, MM, DD, HH
-                if len(parts) >= 4:
-                    year = parts[0]
-                    month = parts[1] 
-                    day = parts[2]
-                    hour = parts[3]
-                    
-                    # Limpiar la hora si tiene underscore o caracteres extra
-                    # Ej: "13_PAQ" -> "13", "12" -> "12"
-                    if '_' in hour:
-                        hour = hour.split('_')[0]
-                    elif ' ' in hour:
-                        hour = hour.split(' ')[0]
-                    # Si tiene extensión o más texto, tomar solo los primeros dígitos
-                    hour = ''.join(filter(str.isdigit, hour))
-                    
-                    # Validar que todos sean números
-                    if (year.isdigit() and month.isdigit() and 
-                        day.isdigit() and hour.isdigit()):
-                        
-                        year_int = int(year)
-                        month_int = int(month)
-                        day_int = int(day)
-                        hour_int = int(hour)
-                        
-                        # Crear datetime
-                        file_date = datetime.datetime(year_int, month_int, day_int, hour_int, 0)
-                        
-                        if newest_date is None or file_date > newest_date:
-                            newest_date = file_date
-                            newest_file = file_path
-                        
-                        print(f"🔍 {filename} → {file_date.strftime('%Y-%m-%d %H:%M')}")
-                    else:
-                        print(f"⚠️ Formato de fecha inválido en: {filename}")
-                        
-            except (ValueError, IndexError) as e:
-                print(f"⚠️ No se pudo extraer fecha de {filename}: {e}")
-                continue
-        
-        if newest_file:
-            file_date_only = newest_date.date()
-            
-            # Verificar si el archivo es de hoy
-            if file_date_only < today:
-                print(f"⚠️ El archivo {os.path.basename(newest_file)} no es de hoy ({file_date_only}), se recomienda descargar")
-            
-            print(f"✅ Archivo más reciente: {os.path.basename(newest_file)} ({newest_date.strftime('%Y-%m-%d %H:%M')})")
-            return newest_file, newest_date
-        else:
-            print(f"❌ No se pudo determinar el archivo más reciente en {os.path.basename(path)}")
-            return None, None
 
     def run_queries(self, queries_folder, schema, table_name):
         """Ejecuta las consultas SQL en el folder especificado."""

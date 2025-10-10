@@ -33,8 +33,10 @@ class FACTURAS:
         
         preffix = os.path.basename(facturas_folder)
         # DataFrame general vacío
+        print("\nIniciando la extracción de facturas")
         df_general = self.helpers.load_and_concat(self.data_access.get(facturas))
-
+        print("\nIniciando la extracción de pagos")
+        df_pagos = self.helpers.load_and_concat(self.data_access.get('PAGOS_PAQ'))
         # Guardar resultado en carpeta local
         if not df_general.empty:
             today = datetime.datetime.today().strftime("%Y-%m-%d-%H")  # ✅ Formato de fecha corregido
@@ -79,10 +81,15 @@ class FACTURAS:
             else:
                 print("ℹ️ No existe estatus_facturas.xlsx, no se filtraron cancelados")
 
+            # --- Guardar ---
+
             try:
-                df_general.to_excel(output_file, index=False)
+                with pd.ExcelWriter(output_file, engine="openpyxl") as writer:
+                    df_general.to_excel(writer, sheet_name="df_facturas", index=False)
+                    df_pagos.to_excel(writer, sheet_name="df_pagos", index=False)
+
                 print(f"\n💾 Archivo guardado en {output_file}")
-                print(f"📊 Total de filas procesadas: {len(df_general)}")
+                print(f"📊 Total de filas procesadas: {len(df_general)} en 'df_facturas' y {len(df_pagos)} en 'df_pagos'")
                 return True
             except PermissionError as e:
                 print(f"❌ Error de permisos: {e}")

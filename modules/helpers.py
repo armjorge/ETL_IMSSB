@@ -22,8 +22,23 @@ class HELPERS:
                 print(f"⚠️ Skipping {name}, missing file_path or sheet")
                 continue
 
-            # Load Excel
-            df = pd.read_excel(file_path, sheet_name=sheet)
+            # Try to find the header row by checking first 10 rows
+            df = None
+            for skip in range(11):  # 0 to 10
+                try:
+                    temp_df = pd.read_excel(file_path, sheet_name=sheet, skiprows=skip, nrows=0)  # Read headers only
+                    if all(col in temp_df.columns for col in rows):
+                        df = pd.read_excel(file_path, sheet_name=sheet, skiprows=skip)
+                        #print(f"✅ Header found at skiprows={skip} for {name}")
+                        break
+                except Exception as e:
+                    print(f"⚠️ Error reading with skiprows={skip} for {name}: {e}")
+                    continue
+            else:
+                print(f"⚠️ Could not find matching columns {rows} in first 10 rows for {name}, loading with skiprows=0")
+                df = pd.read_excel(file_path, sheet_name=sheet)
+
+            print(f"Loaded df for {name}: shape={df.shape}, columns={list(df.columns)}")
 
             # Keep only requested columns
             if rows:
@@ -39,7 +54,7 @@ class HELPERS:
             df.columns = standard_cols[:len(df.columns)]
 
             # Add a source tag
-            df["__source__"] = name
+            #df["__source__"] = name
 
             dfs.append(df)
 
@@ -53,7 +68,7 @@ class HELPERS:
             final_df = pd.concat(dfs, ignore_index=True)
 
             # Restore original column names + __source__
-            final_df.columns = original_names + ["__source__"]
+            final_df.columns = original_names #+ ["__source__"]
 
             print(f"\n🔗 Final concatenated DataFrame: {final_df.shape[0]} rows × {final_df.shape[1]} cols")
             return final_df

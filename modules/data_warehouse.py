@@ -9,7 +9,7 @@ from typing import Optional
 try:
     import matplotlib.pyplot as plt
     from matplotlib.backends.backend_pdf import PdfPages
-    from matplotlib.ticker import FuncFormatter  # Movido aquí para evitar reimports
+    from matplotlib.ticker import FuncFormatter  # Movido aquí para evitar reimpots
     _HAS_MPL = True
 except Exception:
     _HAS_MPL = False
