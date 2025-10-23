@@ -118,13 +118,12 @@ class DownloadedFilesManager:
             file_type = os.path.splitext(file)[1].lower().lstrip('.')
             try:
                 if file_type == 'csv':
-                    # CSV robusto: respeta '\,' como coma literal dentro del campo
                     df = pd.read_csv(
                         file,
                         sep=",",
-                        engine="c",              # soporta escapechar y es rápido
+                        engine="c",
                         encoding="utf-8-sig",
-                        quoting=csv.QUOTE_NONE,
+                        quotechar='"',           # ✅ interpret quoted text correctly
                         escapechar="\\",
                         na_values=["\\N"],
                         dtype=str,

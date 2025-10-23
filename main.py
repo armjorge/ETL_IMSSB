@@ -72,6 +72,7 @@ class ETL_APP:
         PREI_processed_path = os.path.join(self.working_folder, "PREI", "PREI_files")
         ALTAS_processed_path = os.path.join(self.working_folder, "SAI", "SAI Altas_files")
         queries_folder = os.path.join(self.folder_root, "sql_queries")
+        os.makedirs(queries_folder, exist_ok=True)
 
 
         while True:
@@ -91,12 +92,11 @@ class ETL_APP:
                 "\t6) Ejecutar consultas SQL\n"
                 "\t7) Inteligencia de negocios\n"
                 "\tauto Ejecutar todo automáticamente\n"
-                "\t0) Salir"
+                "\t0) Salir\n"
             ).strip()
         
             if choice == "1":
                 # Probar fusión de archivos descargados 
-                self.downloaded_files_manager.manage_downloaded_files(temporal_orders_path, camunda_steps)
                 exito_descarga_ordenes = self.orders_manager.execute_download_session(temporal_orders_path, camunda_steps)
                 if exito_descarga_ordenes:
                     print("✅ Descarga de Órdenes completada")
