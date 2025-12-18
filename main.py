@@ -12,6 +12,7 @@ from modules.downloaded_files_manager import DownloadedFilesManager
 from modules.data_integration import DataIntegration
 from modules.sql_connexion_updating import SQL_CONNEXION_UPDATING
 from modules.helpers import HELPERS
+from modules.db_payments_feed import DB_PAYMENTS_FEED
 
 class ETL_APP:
     def __init__(self):
@@ -92,6 +93,7 @@ class ETL_APP:
                 "\t6) Ejecutar consultas SQL\n"
                 "\t7) Inteligencia de negocios\n"
                 "\tauto Ejecutar todo automáticamente\n"
+                "\t8) Actualizar relación de Oficina de atención de proveedores\n"
                 "\t0) Salir\n"
             ).strip()
         
@@ -161,6 +163,11 @@ class ETL_APP:
                 self.data_integration.integrar_datos()
                 self.sql_integration.load_menu()
                 self.sql_integration.run_queries(queries_folder)
+            elif choice == "8":
+                print("Actualizando relación de Oficina de atención de proveedores...")
+                db_payments_feed = DB_PAYMENTS_FEED(self.integration_path, self.data_access)
+                db_payments_feed.menu_db_payments_feed()
+                print("✅ Actualización completada")
 
             elif choice == "0":
                 print("Saliendo de la aplicación...")
