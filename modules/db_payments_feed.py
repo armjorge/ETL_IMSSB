@@ -136,6 +136,17 @@ class DB_PAYMENTS_FEED:
         email_folder = os.path.join(source_folder, "Emails de OAP")
         os.makedirs(email_folder, exist_ok=True)
 
+        # Archivos presentes en email_folder
+        allowed_ext = {".xlsx", ".pdf"}
+
+        files_in_folder = [
+            os.path.join(email_folder, f)
+            for f in os.listdir(email_folder)
+            if os.path.isfile(os.path.join(email_folder, f))
+            and not f.startswith("~")
+            and os.path.splitext(f)[1].lower() in allowed_ext
+        ]
+        print('\n', files_in_folder,'\n')
         # Siempre regresar DF con columnas esperadas para evitar KeyError
         out_columns = ["folio_fiscal", "file_name"]
 

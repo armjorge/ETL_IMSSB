@@ -164,8 +164,8 @@ class ETL_APP:
                 self.sql_integration.load_menu()
                 self.sql_integration.run_queries(queries_folder)
             elif choice == "8":
-                print("Actualizando relación de Oficina de atención de proveedores...")
-                db_payments_feed = DB_PAYMENTS_FEED(self.integration_path, self.data_access)
+                print("Actualizando relación de Oficina de atención de proveedores...") 
+                db_payments_feed = DB_PAYMENTS_FEED(self.working_folder, self.data_access)
                 db_payments_feed.menu_db_payments_feed()
                 print("✅ Actualización completada")
 
