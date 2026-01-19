@@ -14,20 +14,36 @@ class ORCHESTRATOR:
         self.folder_root =root_path
         self.working_folder = os.path.join(self.folder_root, "Implementación")
         self.downloads_path = os.path.join(self.working_folder, "Proof of Delivery")
+        self.cancel_path = os.path.join(self.working_folder, "Cancelaciones")
         os.makedirs(self.downloads_path, exist_ok=True)
+        os.makedirs(self.cancel_path, exist_ok=True)
+
         self.web_driver_manager = WebAutomationDriver(self.downloads_path)
+        
         self.config_manager = ConfigManager(self.working_folder)
         self.data_access = self.config_manager.yaml_creation(self.working_folder)
         
         
     def run(self):
         print("🚀 Inicializando aplicación...")
-        # Cargar SAI Manager Proof of Delivery
-        from modules.proof_of_delivery import SAI_PROOF_OF_DELIVERY
-        # Inicializar SAI manager
-        sagi_proof_delivery = 'SAGI_PROOF_DELIVERY'
-        self.proof_of_delivery = SAI_PROOF_OF_DELIVERY(self.working_folder, self.web_driver_manager, self.data_access)    
-        self.proof_of_delivery.execute_download_session(self.downloads_path,sagi_proof_delivery)
+        print("1. Descargar archivos de SAGI")
+        print("2. Cancelar facturas en SAGI")
+        while True: 
+            choice = input("Elige 1 para descargar archivos SAGI o 2 para cancelar facturas en SAGI: ")
+            if choice == "1":  
+                # Cargar SAI Manager Proof of Delivery
+                from modules.proof_of_delivery import SAI_PROOF_OF_DELIVERY
+                # Inicializar SAI manager
+                sagi_proof_delivery = 'SAGI_PROOF_DELIVERY'
+                self.proof_of_delivery = SAI_PROOF_OF_DELIVERY(self.working_folder, self.web_driver_manager, self.data_access)    
+                self.proof_of_delivery.execute_download_session(self.downloads_path,sagi_proof_delivery)
+            if choice == "2":
+                # Cargar SAI Manager Proof of Delivery
+                from modules.cancel_loaded_sagi import SAGI_CANCEL_UPLOADED
+                # Inicializar SAI manager
+                sagi_proof_delivery = 'SAGI_CANCEL_UPLOADED'
+                self.proof_of_delivery = SAGI_CANCEL_UPLOADED(self.working_folder, self.web_driver_manager, self.data_access)    
+                self.proof_of_delivery.execute_cancel_session(self.cancel_path,sagi_proof_delivery)                
 
 if __name__ == "__main__":
     BASE_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__)))
