@@ -40,7 +40,14 @@ class DB_PAYMENTS_FEED:
         # 4. CRITICAL: Assign the clean numeric values back to the included rows.
         #    This ensures 'importe' is actually float/int, not a string look-alike.
         df_included_rows['importe'] = numeric_importe[is_valid_number]
+        # 5. Identify rows in the "included" set that are missing 'folio_fiscal'
+        is_missing_folio = df_included_rows['folio_fiscal'].isna()
 
+        # 6. Add those specific rows to our excluded DataFrame
+        df_excluded_rows = pd.concat([df_excluded_rows, df_included_rows[is_missing_folio]])
+
+        # 7. Finally, keep only the rows that have both a valid number AND a folio_fiscal
+        df_included_rows = df_included_rows[~is_missing_folio]
         # --- Logging / Feedback ---
         print(f"   📊 Rows kept: {len(df_included_rows)}")
         print(f"   🗑️ Rows dropped (repeated headers/invalid): {len(df_excluded_rows)}")
@@ -270,8 +277,9 @@ class DB_PAYMENTS_FEED:
                     has_folio = any(folio_pattern.search(val) for val in row_values)
                     has_ref = "referencia" in row_values
                     has_importe = "importe" in row_values
+                    has_clc = 'clc'in row_values
 
-                    if has_folio and has_ref and has_importe:
+                    if has_folio and has_ref and has_importe and has_clc:
                         header_row = i
                         break
 
@@ -281,7 +289,7 @@ class DB_PAYMENTS_FEED:
                     break 
                 
                 # 3. Si NO encontramos el header, abrimos el archivo y pedimos ayuda
-                print(f"{Fore.RED}   ❌ No se encontraron las columnas requeridas ('folio fiscal', 'referencia', 'importe').{Style.RESET_ALL}")
+                print(f"{Fore.RED}   ❌ No se encontraron las columnas requeridas ('folio fiscal', 'referencia', 'importe', 'clc').{Style.RESET_ALL}")
                 print(f"   📂 Abriendo archivo para corrección manual...")
 
                 current_os = platform.system()
@@ -320,7 +328,7 @@ class DB_PAYMENTS_FEED:
                     df = df.rename(columns={candidates[0]: "folio_fiscal"})
             
             # Validación final de columnas antes de filtrar
-            required_cols = ["folio_fiscal", "referencia", "importe"]
+            required_cols = ["folio_fiscal", "referencia", "importe", "clc"]
             missing_cols = [c for c in required_cols if c not in df.columns]
 
             if missing_cols:
@@ -341,9 +349,6 @@ class DB_PAYMENTS_FEED:
             return pd.DataFrame(columns=out_columns)
 
         df_pagos_consolidado = pd.concat(df_list, ignore_index=True)
-
-        # Aquí ya existe la columna sí o sí
-        df_pagos_consolidado = df_pagos_consolidado.dropna(subset=["folio_fiscal"])
 
         print("\n🧾 Preview consolidado:")
         print(df_pagos_consolidado.head(5))
