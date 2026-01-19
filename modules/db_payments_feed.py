@@ -64,7 +64,7 @@ class DB_PAYMENTS_FEED:
 
         schema = self.data_access.get("data_warehouse_schema")
         table_name = "dim_uuid_pagadas"
-        primary_keys = ["file_name"]
+        primary_keys = ["file_name", "folio_fiscal"]
 
         engine = self.sql_conexion()
         if engine is None:
