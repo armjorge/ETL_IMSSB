@@ -354,7 +354,9 @@ class DataIntegration:
             return left_df
 
         # Índice compuesto para búsquedas rápidas
-        right_index = right_df.groupby(right_keys)[return_cols].agg(lambda x: ','.join(x.astype(str))).reset_index()
+        #right_index = right_df.groupby(right_keys)[return_cols].agg(lambda x: ','.join(x.astype(str))).reset_index()
+        agg_func = lambda x: ','.join(map(str, x.dropna()))
+        right_index = right_df.groupby(right_keys)[return_cols].agg(agg_func).reset_index()
 
         # Hacer merge left→right (left join)
         merged = pd.merge(

@@ -1,0 +1,17 @@
+[project]
+name = "etl-imssb"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "colorama>=0.4.6",
+    "lxml>=6.0.2",
+    "openpyxl>=3.1.5",
+    "pandas>=3.0.1",
+    "psycopg2>=2.9.11",
+    "pypdf2>=3.0.1",
+    "pyyaml>=6.0.3",
+    "selenium>=4.41.0",
+    "sqlalchemy>=2.0.48",
+]
