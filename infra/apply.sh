@@ -2,6 +2,7 @@
 # Apply / recreate AWS infra for IMSS Bienestar:
 #   - S3 bucket + source folder placeholders
 #   - IAM role/policy for Snowflake storage integration (bootstrap trust)
+#   - SNS topics + S3→SNS notifications for Snowpipe (camunda/payments/invoicing)
 #
 # Usage:
 #   ./infra/apply.sh              # plan + apply
@@ -100,7 +101,10 @@ case "$ACTION" in
     terraform output
     echo
     echo "S3 root: s3://${BUCKET_NAME}/${ROOT_PREFIX}/"
-    echo "Next: ./snowflake/setup_s3_stage.sh   (or ./scripts/recreate_infra.sh)"
+    echo "Next:"
+    echo "  1) ./snowflake/setup_s3_stage.sh          # storage integration + stage"
+    echo "  2) snowflake/iceberg_tables.sql/src_iceberg_tables.sql   # Iceberg tables"
+    echo "  3) ./snowflake/setup_snowpipes.sh         # AUTO_INGEST pipes ↔ SNS"
     ;;
   destroy)
     read -r -p "Destroy bucket ${BUCKET_NAME} and related IAM? Type yes: " conf

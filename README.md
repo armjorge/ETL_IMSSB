@@ -44,8 +44,17 @@ cp infra/infra.env.example infra/infra.env   # edit knobs (see below)
 
 That runs:
 
-1. `./infra/apply.sh` — S3 bucket, source folders, Snowflake IAM role/policy  
+1. `./infra/apply.sh` — S3 bucket, source folders, Snowflake IAM role/policy, Snowpipe SNS topics  
 2. `./snowflake/setup_s3_stage.sh` — `STORAGE INTEGRATION` + IAM trust + stage + `LIST`
+
+Then (Iceberg + auto-ingest):
+
+```bash
+# Create/load Iceberg tables (see snowflake/iceberg_tables.sql/src_iceberg_tables.sql)
+./snowflake/setup_snowpipes.sh   # S3 → SNS → Snowpipe append (+ etl_file_name basename)
+```
+
+Or fold pipes into recreate after tables exist: `SETUP_SNOWPIPES=1 ./scripts/recreate_infra.sh`.
 
 Or step-by-step:
 
@@ -106,19 +115,26 @@ Tabs: **Paths** · **S3** · **Datasets** · **Camunda / SAGI**.
 ## Project layout
 
 ```
-scripts/recreate_infra.sh     # master: S3 + Snowflake stage
+scripts/recreate_infra.sh     # master: S3 + Snowflake stage (+ optional pipes)
 infra/
-  apply.sh                    # terraform apply (bucket + IAM)
+  apply.sh                    # terraform apply (bucket + IAM + SNS)
   infra.env.example           # knobs (copy → infra.env)
   main.tf / snowflake_iam.tf  # bucket + Snowflake IAM
+  snowpipe_sns.tf             # SNS + S3 event notifications per folder
 snowflake/
   setup_s3_stage.sh           # integration + stage + LIST
+  setup_snowpipes.sh          # AUTO_INGEST pipes ↔ SNS
+  iceberg_tables.sql/         # Iceberg DDL + COPY
   create_*.sql                # SQL templates
 app.py                        # Streamlit dashboard
 imssb_files/                  # local data + config.yml (gitignored)
 modules/                      # extractors, S3, datasets, …
 ```
 
+### Snowpipe (cheap auto-append)
+
+Uploads to `s3://{bucket}/{root_prefix}/{camunda|payments|invoicing|sagi}/*.csv` notify a **per-folder SNS topic**; Snowflake pipes append only that file into the matching Iceberg table and set `etl_file_name` to the object basename. No warehouse is required (serverless Snowpipe). Iceberg Parquet under `iceberg/` is not notified.
+
 ## Legacy CLI
 
-`main.py` still has the older interactive ETL menu. Prefer Streamlit for Excel → CSV → S3 and Camunda/SAGI web extract. Iceberg tables over the stage are next.
+`main.py` still has the older interactive ETL menu. Prefer Streamlit for Excel → CSV → S3 and Camunda/SAGI web extract.

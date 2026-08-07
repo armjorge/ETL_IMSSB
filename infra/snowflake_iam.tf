@@ -1,11 +1,16 @@
-# IAM role + policy so Snowflake can LIST/GET objects under
-# s3://{bucket}/{root_prefix}/ via a storage integration.
+# IAM role + policy so Snowflake can LIST/GET/PUT objects under
+# s3://{bucket}/{root_prefix}/ via a storage integration and/or Iceberg
+# external volume.
 #
 # Bootstrap (first apply): trust uses this AWS account + placeholder external ID.
 # After CREATE STORAGE INTEGRATION + DESC in Snowflake, set:
 #   snowflake_iam_user_arn  = <STORAGE_AWS_IAM_USER_ARN>
-#   snowflake_external_id   = <STORAGE_AWS_EXTERNAL_ID>
+#   snowflake_external_id   = <STORAGE_AWS_EXTERNAL_ID>   # integration
+#   snowflake_external_ids  = ["<EXTERNAL_VOLUME EXTERNAL_ID>", ...]
 # then terraform apply again (or let setup_s3_stage.sh do it).
+#
+# Integration and external volume share the same IAM user ARN but each has its
+# own sts:ExternalId — both must appear in the trust policy.
 
 variable "enable_snowflake_s3_access" {
   description = "Create IAM role/policy for Snowflake storage integration"
@@ -26,9 +31,15 @@ variable "snowflake_iam_user_arn" {
 }
 
 variable "snowflake_external_id" {
-  description = "STORAGE_AWS_EXTERNAL_ID from DESC INTEGRATION (placeholder until DESC)"
+  description = "Primary STORAGE_AWS_EXTERNAL_ID (storage integration; placeholder until DESC)"
   type        = string
   default     = "0000"
+}
+
+variable "snowflake_external_ids" {
+  description = "Extra STORAGE_AWS_EXTERNAL_ID values (e.g. Iceberg external volume)"
+  type        = list(string)
+  default     = []
 }
 
 data "aws_caller_identity" "current" {}
@@ -40,6 +51,10 @@ locals {
     ? var.snowflake_iam_user_arn
     : "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
   )
+  snowflake_external_ids_all = distinct(compact(concat(
+    [var.snowflake_external_id],
+    var.snowflake_external_ids,
+  )))
 }
 
 resource "aws_iam_policy" "snowflake_s3" {
@@ -90,7 +105,8 @@ resource "aws_iam_role" "snowflake" {
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
-      {
+      for i, ext_id in local.snowflake_external_ids_all : {
+        Sid    = "SnowflakeAssume${i}"
         Effect = "Allow"
         Principal = {
           AWS = local.snowflake_trust_principal
@@ -98,10 +114,10 @@ resource "aws_iam_role" "snowflake" {
         Action = "sts:AssumeRole"
         Condition = {
           StringEquals = {
-            "sts:ExternalId" = var.snowflake_external_id
+            "sts:ExternalId" = ext_id
           }
         }
-      },
+      }
     ]
   })
 }

@@ -2,8 +2,9 @@
 # Recreate AWS S3 (+ IAM) and Snowflake storage integration / stage in one go.
 #
 # Safe to re-run (idempotent where possible):
-#   1) Terraform: bucket, prefixes, Snowflake IAM role
+#   1) Terraform: bucket, prefixes, Snowflake IAM role, Snowpipe SNS topics
 #   2) Snowflake: STORAGE INTEGRATION + trust update + STAGE + LIST
+#   3) (optional) Snowpipe AUTO_INGEST — after Iceberg tables exist
 #
 # Customize layout / names:
 #   cp infra/infra.env.example infra/infra.env
@@ -60,6 +61,18 @@ fi
 # --- 2) Snowflake integration + stage ---------------------------------------
 echo
 "${ROOT}/snowflake/setup_s3_stage.sh"
+
+# --- 3) Snowpipe (needs Iceberg tables with etl_file_name) -------------------
+if [[ "${SETUP_SNOWPIPES:-0}" == "1" ]]; then
+  echo
+  echo "→ SETUP_SNOWPIPES=1 — creating AUTO_INGEST pipes…"
+  "${ROOT}/snowflake/setup_snowpipes.sh"
+else
+  echo
+  echo "ℹ️  Snowpipe skipped (Iceberg tables must exist first)."
+  echo "   After src_iceberg_tables.sql:  ./snowflake/setup_snowpipes.sh"
+  echo "   Or re-run with:                SETUP_SNOWPIPES=1 ./scripts/recreate_infra.sh"
+fi
 
 echo
 echo "╔══════════════════════════════════════════════════════╗"

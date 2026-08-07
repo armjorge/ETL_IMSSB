@@ -150,6 +150,9 @@ config.yaml
 # Working data + durable config ({MAIN_PATH}/imssb_files/config.yml, xlsx, CSVs)
 imssb_files/
 
+# macOS
+.DS_Store
+
 # Terraform
 infra/.terraform/
 infra/*.tfstate

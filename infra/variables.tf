@@ -34,3 +34,26 @@ variable "source_folders" {
     "institution_status",
   ]
 }
+
+variable "enable_snowpipe_sns" {
+  description = "Create SNS topics + S3 event notifications for Snowpipe auto-ingest"
+  type        = bool
+  default     = true
+}
+
+variable "snowpipe_folders" {
+  description = "Map of S3 folder under root_prefix → Iceberg table name (Snowpipe targets)"
+  type        = map(string)
+  default = {
+    camunda   = "camunda_orders"
+    payments  = "payments"
+    invoicing = "invoicing"
+    sagi      = "sagi"
+  }
+}
+
+variable "snowflake_aws_account_id" {
+  description = "Snowflake-managed AWS account ID (externalstages IAM users; SNS:Subscribe)"
+  type        = string
+  default     = "974916068036"
+}
