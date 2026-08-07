@@ -6,6 +6,7 @@ from pathlib import Path
 import streamlit as st
 
 from modules.config import ConfigManager
+from modules.credentials import CredentialStore
 from modules.datasets import (
     new_dataset_id,
     normalize_datasets,
@@ -15,6 +16,8 @@ from modules.datasets import (
 )
 from modules.s3_client import S3Client
 from modules.source_validation import SourceValidation, validate_source
+from modules.web_automation_driver import WebAutomationDriver
+from modules.web_extract import WebExtractResult, WebExtractor
 from modules.xlsx_extract import ExtractReport, ExtractResult, XlsxExtractor
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -23,22 +26,35 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 def _init_state(cfg_manager: ConfigManager) -> None:
     if "config" not in st.session_state:
         st.session_state.config = cfg_manager.ensure_config()
+        st.session_state.secrets_revealed = False
     elif "config_path" not in st.session_state or st.session_state.config_path != str(
         cfg_manager.config_path
     ):
         if cfg_manager.config_path.exists():
             st.session_state.config = cfg_manager.load()
+            st.session_state.secrets_revealed = False
     # Always keep datasets as a list with stable ids
     st.session_state.config["datasets"] = normalize_datasets(
         st.session_state.config.get("datasets")
     )
     st.session_state.config_path = str(cfg_manager.config_path)
+    if not st.session_state.get("secrets_revealed"):
+        _reveal_secrets_in_session(cfg_manager)
+        st.session_state.secrets_revealed = True
+        # Reset credential widgets so they pick up decrypted values
+        for system in ("CAMUNDA", "SAGI"):
+            for field in ("url", "user", "password"):
+                key = f"{system}::{field}"
+                if key in st.session_state:
+                    del st.session_state[key]
     if "extract_report" not in st.session_state:
         st.session_state.extract_report = None
     if "last_snapshot" not in st.session_state:
         st.session_state.last_snapshot = None
     if "last_snapshots" not in st.session_state:
         st.session_state.last_snapshots = None
+    if "last_web_extract" not in st.session_state:
+        st.session_state.last_web_extract = None
 
 
 def _widget_key(dataset_id: str, field: str) -> str:
@@ -115,8 +131,25 @@ def _delete_dataset(dataset_id: str) -> None:
             del st.session_state[key]
 
 
+def _credential_store(cfg_manager: ConfigManager) -> CredentialStore:
+    return CredentialStore(cfg_manager.imssb_dir)
+
+
+def _reveal_secrets_in_session(cfg_manager: ConfigManager) -> None:
+    store = _credential_store(cfg_manager)
+    for system in ("CAMUNDA", "SAGI"):
+        creds = st.session_state.config.get(system) or {}
+        st.session_state.config[system] = store.reveal_credentials(creds)
+
+
 def _save_config(cfg_manager: ConfigManager, *, quiet: bool = False) -> Path:
-    path = cfg_manager.save(st.session_state.config)
+    """Persist config with CAMUNDA/SAGI user+password lightly encrypted on disk."""
+    to_disk = deepcopy(st.session_state.config)
+    store = _credential_store(cfg_manager)
+    for system in ("CAMUNDA", "SAGI"):
+        if system in to_disk:
+            to_disk[system] = store.protect_credentials(to_disk.get(system) or {})
+    path = cfg_manager.save(to_disk)
     st.session_state.config_path = str(path)
     if not quiet:
         st.success(f"Saved `{path}`")
@@ -164,6 +197,26 @@ def _show_extract_result(result: ExtractResult) -> None:
         st.write(f"Local: `{result.local_path}`")
     if result.s3_uri:
         st.write(f"S3: `{result.s3_uri}`")
+
+
+def _show_web_extract_result(result: WebExtractResult) -> None:
+    if result.ok:
+        st.success(f"**{result.source}**: {result.message}")
+    else:
+        st.error(f"**{result.source}**: {result.message}")
+    for path in result.local_files:
+        st.write(f"Local: `{path}`")
+    for uri in result.s3_uris:
+        st.write(f"S3: `{uri}`")
+
+
+def _run_web_extract(source: str, upload: bool) -> WebExtractResult:
+    """Sync creds from widgets, run browser session, return True/False via result.ok."""
+    _sync_credentials_from_widgets()
+    extractor = WebExtractor(config=st.session_state.config, project_root=PROJECT_ROOT)
+    if source == "camunda":
+        return extractor.extract_camunda(upload=upload)
+    return extractor.extract_sagi(upload=upload)
 
 
 def _render_path_diagnostics(file_path: str, key_prefix: str) -> str | None:
@@ -465,6 +518,80 @@ def _render_datasets(cfg_manager: ConfigManager) -> None:
         _show_extract_result(st.session_state.last_snapshot)
 
 
+def _web_driver_root(cfg_manager: ConfigManager) -> Path:
+    return cfg_manager.imssb_dir / "web_driver"
+
+
+def _render_chromium_status(cfg_manager: ConfigManager) -> None:
+    st.subheader("Chromium / ChromeDriver")
+    st.caption(
+        f"Portable browser files live under `{_web_driver_root(cfg_manager)}` "
+        "(used by Camunda and SAGI automation)."
+    )
+    probe = WebAutomationDriver(
+        downloads_path=cfg_manager.imssb_dir / "downloads",
+        web_driver_root=_web_driver_root(cfg_manager),
+    )
+    platforms = probe.status()["available_cft_platforms"]
+    default_plat = probe.default_cft_platform()
+    try:
+        default_idx = platforms.index(default_plat)
+    except ValueError:
+        default_idx = 0
+
+    cft_platform = st.selectbox(
+        "Chrome for Testing package to install",
+        options=platforms,
+        index=default_idx,
+        key="cft_platform_select",
+        help=(
+            "Official CfT zips: linux64, mac-arm64, mac-x64, win32, win64. "
+            "There is no linux-arm64 build — on ARM Linux we default to linux64."
+        ),
+    )
+
+    driver = WebAutomationDriver(
+        downloads_path=cfg_manager.imssb_dir / "downloads",
+        web_driver_root=_web_driver_root(cfg_manager),
+        cft_platform=cft_platform,
+    )
+    status = driver.status(cft_platform)
+    if status["ready"]:
+        st.markdown("🟢 **Chromium ready**")
+    elif status.get("chrome_found") and status.get("chromedriver_found"):
+        st.markdown("🔴 **Chromium installed but not runnable on this host**")
+    else:
+        st.markdown("⬜ **Chromium not found**")
+
+    st.write(f"Host: `{status['host_platform']}` · CfT package: `{status['cft_platform']}`")
+    chrome_mark = (
+        "🟢"
+        if status.get("chrome_runs")
+        else ("🟡" if status.get("chrome_found") else "⬜")
+    )
+    driver_mark = (
+        "🟢"
+        if status.get("chromedriver_runs")
+        else ("🟡" if status.get("chromedriver_found") else "⬜")
+    )
+    st.write(f"{chrome_mark} Chrome: `{status['chrome_path']}`")
+    st.write(f"{driver_mark} ChromeDriver: `{status['chromedriver_path']}`")
+    if status.get("note"):
+        if status["host_platform"] == "linux-arm64":
+            st.warning(status["note"])
+        else:
+            st.info(status["note"])
+
+    if st.button("Download / install Chromium", key="install_chromium"):
+        with st.spinner(f"Downloading Chrome for Testing ({cft_platform})..."):
+            result = driver.install_chrome(cft_platform)
+        if result.get("ok"):
+            st.success(result.get("message", "Installed"))
+        else:
+            st.error(result.get("message", "Install failed"))
+        st.rerun()
+
+
 def _render_credentials(system_key: str, title: str) -> None:
     st.subheader(title)
     creds = st.session_state.config.setdefault(
@@ -474,14 +601,25 @@ def _render_credentials(system_key: str, title: str) -> None:
         st.session_state.config[system_key] = {"url": "", "user": "", "password": ""}
         creds = st.session_state.config[system_key]
 
-    creds["url"] = st.text_input("URL", value=creds.get("url", ""), key=f"{system_key}_url")
-    creds["user"] = st.text_input("User", value=creds.get("user", ""), key=f"{system_key}_user")
-    creds["password"] = st.text_input(
-        "Password",
-        value=creds.get("password", ""),
-        type="password",
-        key=f"{system_key}_password",
-    )
+    # Seed widget state once so edits don't fight encrypted disk values
+    for field in ("url", "user", "password"):
+        key = f"{system_key}::{field}"
+        if key not in st.session_state:
+            st.session_state[key] = creds.get(field, "") or ""
+
+    st.text_input("URL", key=f"{system_key}::url")
+    st.text_input("User", key=f"{system_key}::user")
+    st.text_input("Password", type="password", key=f"{system_key}::password")
+    st.caption("User and password are stored obfuscated (`enc:v1:…`) in config.yml.")
+
+
+def _sync_credentials_from_widgets() -> None:
+    for system_key in ("CAMUNDA", "SAGI"):
+        st.session_state.config[system_key] = {
+            "url": st.session_state.get(f"{system_key}::url", ""),
+            "user": st.session_state.get(f"{system_key}::user", ""),
+            "password": st.session_state.get(f"{system_key}::password", ""),
+        }
 
 
 def main() -> None:
@@ -573,11 +711,43 @@ def main() -> None:
         _render_datasets(cfg_manager)
 
     with tab_creds:
+        _render_chromium_status(cfg_manager)
+        st.divider()
         _render_credentials("CAMUNDA", "Camunda")
         st.divider()
         _render_credentials("SAGI", "SAGI")
-        if st.button("Save credentials"):
+        if st.button("Save credentials", type="primary"):
+            _sync_credentials_from_widgets()
             _save_config(cfg_manager)
+            st.info("Credentials saved to config.yml (user/password obfuscated).")
+
+        st.divider()
+        st.subheader("Web extract")
+        st.caption(
+            "Opens portable Chrome, runs the legacy Camunda/SAGI navigation, "
+            "collects downloads as-is under `imssb_files/{camunda|sagi}/`, "
+            "and uploads to S3. The button blocks until the session returns True/False."
+        )
+        upload_web = st.checkbox("Upload to S3 after download", value=True, key="web_upload_s3")
+        col_c, col_s = st.columns(2)
+        with col_c:
+            if st.button("Extract Camunda", key="extract_camunda", type="primary"):
+                with st.spinner(
+                    "Camunda: Chrome open — filter/export in the browser; "
+                    "waiting for downloads to finish…"
+                ):
+                    st.session_state.last_web_extract = _run_web_extract(
+                        "camunda", upload=upload_web
+                    )
+        with col_s:
+            if st.button("Extract SAGI", key="extract_sagi", type="primary"):
+                with st.spinner("SAGI: Chrome open — waiting for export to finish…"):
+                    st.session_state.last_web_extract = _run_web_extract(
+                        "sagi", upload=upload_web
+                    )
+
+        if st.session_state.last_web_extract:
+            _show_web_extract_result(st.session_state.last_web_extract)
 
 
 if __name__ == "__main__":

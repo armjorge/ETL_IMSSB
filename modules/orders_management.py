@@ -2,6 +2,7 @@ import os
 import time
 import datetime
 import platform
+from pathlib import Path
 from selenium import webdriver  
 from selenium.webdriver.chrome.options import Options  
 from selenium.webdriver.chrome.service import Service 
@@ -303,37 +304,46 @@ class orders_management:
             return None
         
     def execute_download_session(self, download_folder, actions_name):
-        """Ejecuta una sesión completa de descarga"""
-        if not self.chrome_driver_load:
-            print("❌ Driver de Chrome no disponible")
-            return False
+        """Ejecuta una sesión completa de descarga. Returns True on success."""
         success = False
-        self.download_folder = download_folder  # Agregar para usar en _execute_step
+        self.download_folder = download_folder
+        os.makedirs(download_folder, exist_ok=True)
         try:
-            # Inicializar driver
-            self.driver = self.chrome_driver_load(download_folder)
-            
-            # Configurar acciones según los datos de acceso
-            actions = self.data_access.get(actions_name, {})
+            # Prefer portable WebAutomationDriver when available
+            if hasattr(self.web_driver_manager, "create_driver"):
+                self.driver = self.web_driver_manager.create_driver(
+                    custom_downloads_path=download_folder
+                )
+            else:
+                self.driver = self.chrome_driver_load(download_folder)
 
-            if not actions:
-                print(f"❌ No se encontraron acciones para '{actions_name}'. Verifique que el nombre sea correcto y que las acciones estén definidas en data_access.")
+            if not self.driver:
+                print("❌ Driver de Chrome no disponible")
                 return False
-            
-            # Ejecutar navegación
+
+            actions = self.data_access.get(actions_name, {})
+            if not actions:
+                print(
+                    f"❌ No se encontraron acciones para '{actions_name}'. "
+                    "Verifique data_access."
+                )
+                return False
+
             success = self._execute_navigation(actions)
             if success:
-                print("✅ Navegación completada con éxito. Procediendo a procesar archivos...")
+                print("✅ Navegación completada con éxito.")
                 return True
-            else:
-                print("❌ Navegación fallida.")
-                return False
+            print("❌ Navegación fallida.")
+            return False
         except Exception as e:
             print(f"❌ Error en execute_download_session: {e}")
             return False
         finally:
-            if success and hasattr(self, 'driver') and self.driver:
-                self.driver.quit()  # Solo cerrar si fue exitoso
+            if hasattr(self, "driver") and self.driver:
+                try:
+                    self.driver.quit()
+                except Exception:
+                    pass
 
     def _execute_navigation(self, actions):
         """Ejecuta la navegación web paso a paso"""
@@ -361,6 +371,56 @@ class orders_management:
             
         return True
 
+    def _wait_for_downloads(self, timeout_seconds: int = 1800, poll_seconds: float = 5) -> bool:
+        """
+        Wait until at least one new non-partial file appears in download_folder,
+        and no .crdownload/.tmp files remain. Also accepts Enter early if stdin is a TTY.
+        """
+        import select
+        import sys
+
+        folder = Path(self.download_folder) if hasattr(self, "download_folder") else None
+        if folder is None:
+            print("    ⚠️ No download_folder set; falling back to input()")
+            try:
+                input()
+                return True
+            except EOFError:
+                return False
+
+        folder.mkdir(parents=True, exist_ok=True)
+        before = {p.name for p in folder.iterdir() if p.is_file()}
+        print(f"    ⏳ Esperando descargas en {folder} (timeout {timeout_seconds}s)...")
+        print("       (También puedes presionar Enter en la terminal para continuar)")
+
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            # Allow early continue from terminal
+            try:
+                if sys.stdin.isatty() and select.select([sys.stdin], [], [], 0)[0]:
+                    sys.stdin.readline()
+                    print("    ✓ Continuando por Enter del usuario")
+                    return True
+            except Exception:
+                pass
+
+            files = [p for p in folder.iterdir() if p.is_file()]
+            partial = [
+                p for p in files
+                if p.name.endswith(".crdownload")
+                or p.name.endswith(".tmp")
+                or p.name.endswith(".part")
+            ]
+            new_files = [p for p in files if p.name not in before and p not in partial]
+            if new_files and not partial:
+                print(f"    ✓ Descargas detectadas: {[p.name for p in new_files]}")
+                time.sleep(2)  # settle
+                return True
+            time.sleep(poll_seconds)
+
+        print("    ❌ Timeout esperando descargas")
+        return False
+
     def _execute_step(self, step, step_number):
         """Ejecuta un paso individual de la automatización"""
         step_type = step["type"]
@@ -369,8 +429,17 @@ class orders_management:
         if step_type == "wait_user":
             msg = step.get("value", "Presiona enter para continuar...")
             print(f"\n    ⏸ {msg}")
-            input()
-            return True
+            if step.get("wait_for_downloads"):
+                return self._wait_for_downloads(
+                    timeout_seconds=int(step.get("timeout_seconds", 1800)),
+                    poll_seconds=float(step.get("poll_seconds", 5)),
+                )
+            try:
+                input()
+                return True
+            except EOFError:
+                # Non-interactive (e.g. some Streamlit contexts): fall back to downloads wait
+                return self._wait_for_downloads(timeout_seconds=1800, poll_seconds=5)
         # Paso para llamar a la función. 
         elif step_type == "call_function":
             function_name = step.get("function")

@@ -110,7 +110,7 @@ Dashboard tabs:
 1. **Paths** — set and save `MAIN_PATH` (persisted in `config.yml`).
 2. **S3** — link an existing bucket or create one if missing.
 3. **Datasets** — create/edit schemas; green validation for file/sheet/columns; **Take snapshot** per dataset or **Snapshot all ready** for every green dataset in order.
-4. **Camunda / SAGI** — edit URL, user, password (extraction later).
+4. **Camunda / SAGI** — Chromium status (green/gray) + install into `{MAIN_PATH}/imssb_files/web_driver/`; save URL/user/password (user/password obfuscated in `config.yml`). Extraction wired next.
 
 Snapshot example:
 
