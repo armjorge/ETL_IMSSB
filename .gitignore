@@ -144,6 +144,26 @@ ENV/
 env.bak/
 venv.bak/
 
+# Local runtime config (credentials + file paths)
+config.yaml
+
+# Working data + durable config ({MAIN_PATH}/imssb_files/config.yml, xlsx, CSVs)
+imssb_files/
+
+# Terraform
+infra/.terraform/
+infra/*.tfstate
+infra/*.tfstate.*
+infra/terraform.tfvars
+infra/infra.env
+infra/terraform.tfvars.snowflake
+
+# Local tooling binaries
+.tools/
+
+# Local extract smoke-test artifacts
+tmp_extract_test/
+
 # Spyder project settings
 .spyderproject
 .spyproject
@@ -206,3 +226,4 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 Implementación/
+imssb_files/

@@ -39,7 +39,10 @@ class ETL_APP:
         # Inicializar web driver manager (sin crear el driver aún)
         self.helpers = HELPERS()
         downloads_path = os.path.join(self.working_folder)
-        self.web_driver_manager = WebAutomationDriver(downloads_path)
+        web_driver_root = os.path.join(self.folder_root, "imssb_files", "web_driver")
+        self.web_driver_manager = WebAutomationDriver(
+            downloads_path, web_driver_root=web_driver_root
+        )
         # Inicializar SAI manager
         self.orders_manager = orders_management(self.working_folder, self.web_driver_manager, self.data_access)
         self.prei_manager = ACCOUNTS_MANAGEMENT(self.working_folder, self.web_driver_manager, self.data_access)

@@ -1,107 +1,124 @@
 ﻿# ETL IMSSB
 
-## Descripcion general
-Este repositorio contiene una aplicacion ETL que automatiza la captura, depuracion, integracion y carga de informacion para el seguimiento de contratos IMSS/INSABI. El flujo parte de fuentes web (SAI/Camunda, SAGI y PREI) combinadas con catalogos y facturas internas, y finaliza actualizando un esquema historico en PostgreSQL ademas de habilitar reportes de inteligencia de negocios.
+Extract configured Excel / web sources to dated files, upload them to S3, and expose that S3 prefix to Snowflake via an external stage.
 
-## Arquitectura y componentes
-- `main.py`: orquesta el flujo mediante un menu interactivo (extraccion, transformacion, carga y BI).
-- `modules/config.py`: crea o lee `config.yaml` con credenciales, rutas, columnas y definicion de pasos de navegacion.
-- `modules/web_automation_driver.py`: prepara Chrome for Testing y configura el WebDriver de Selenium.
-- `modules/orders_management.py`: automatiza la descarga de ordenes (SAI/Camunda, SAGI) siguiendo los pasos definidos en el YAML.
-- `modules/payments_status_management.py`: descarga cortes PREI por rangos de fechas y valida archivos esperados.
-- `modules/facturas.py`: consolida facturas desde Excel y XML/PDF, cruza estatus SAT y genera bases por lote.
-- `modules/downloaded_files_manager.py`: inspecciona los archivos descargados en el dia, fusiona por encabezado y renombra con prefijos fecha-hora.
-- `modules/data_integration.py`: enlaza ordenes, facturas y tesoreria (mas logistica) por llave de orden y guarda la integracion diaria.
-- `modules/sql_connexion_updating.py`: normaliza columnas y reemplaza la tabla destino en PostgreSQL; tambien puede ejecutar scripts SQL.
-- `modules/data_warehouse.py`: consulta el historico, construye reportes DOCX/CSV y graficas para toma de decisiones.
+## What this phase does
 
-## Requisitos previos
-- Python 3.10 o superior.
-- Dependencias principales: `pandas`, `numpy`, `openpyxl`, `pyyaml`, `selenium`, `lxml`, `PyPDF2`, `sqlalchemy`, `matplotlib`, `python-docx` (opcional para reportes).
-- Chrome for Testing y Chromedriver instalados en el directorio del usuario (`Documents/chrome-win64` y `Documents/chromedriver-win64`).
-- Acceso a las fuentes web (credenciales validas) y a las rutas locales de facturas y comprobantes.
+Streamlit dashboard to configure **dataset schemas**, take clean CSV snapshots into S3, and run Camunda/SAGI browser extracts.
 
-Para instalar dependencias basicas:
-```bash
-python -m venv .venv
-.\.venv\Scripts\activate
-pip install pandas numpy openpyxl pyyaml selenium lxml PyPDF2 sqlalchemy matplotlib python-docx
+Each dataset has:
+
+- `dataset_name` — human label (editable)
+- `folder` — S3/local upload subfolder (lowercase, no spaces/special chars)
+- `prefix` — optional filename tag (empty OK; e.g. `fantasmas`)
+- Excel `file_path` (often a synced cloud folder), `sheet`, `columns`
+
+**Take snapshot** writes:
+
+```text
+{MAIN_PATH}/imssb_files/{folder}/{folder} [prefix] dd-mm-yyyy hh mm.csv
+s3://{bucket}/{root_prefix}/{folder}/
 ```
-Ajusta la lista segun los modulos que planees ejecutar (las funciones de BI requieren `matplotlib` y `python-docx`).
 
-## Preparacion del entorno
-1. Clona o descarga el repositorio en tu equipo Windows.
-2. Crea la carpeta `Implementacion` (el script puede generarla con caracteres especiales) y dentro define la estructura:
-   - `Camunda/`
-   - `Facturas/`
-   - `SAGI/`
-   - `PREI/`
-   - `Logistica/`
-   - `Estatus SAT/Comprobantes SAT/`
-   - `Integracion/`
-3. Ejecuta `python main.py` una primera vez para que `ConfigManager` cree `config.yaml` si no existe.
-4. Llena `Implementacion/config.yaml` con credenciales, rutas de origen, columnas esperadas y pasos de automatizacion.
+Defaults: `bucket=so3-data`, `root_prefix=imss_bienestar`. CSV: all text, pipe `|` separator, minimal quote cleanup.
 
-## Configuracion (`config.yaml`)
-El archivo incluye:
-- Credenciales y URL de SAI, PREI y SAGI (`SAI_user`, `SAI_password`, etc.).
-- Diccionarios `PAQS_IMSS` y `PAQS_INSABI` con rutas de archivos Excel, hojas y columnas a importar.
-- Listados de columnas esperadas (`columns_IMSS_altas`, `columns_IMSS_orders`, `columns_PREI`).
-- Parametros de conexion SQL (`sql_url`, `sql_target`).
-- Rutas de origen para facturas y reportes (`facturas_path`, `jupyterlab_files`).
-- Definicion de pasos de Selenium para cada sitio (`CAMUNDA`, `SAGI`), incluyendo acciones `click`, `send_keys`, `wait_user` y `call_function`.
+Runtime config lives in `{MAIN_PATH}/imssb_files/config.yml` (gitignored).
 
-Mantiene credenciales sensibles fuera del codigo fuente y permite ajustar los flujos de navegacion sin modificar Python.
+## Prerequisites
 
-## Carpetas y archivos generados
-- `Implementacion/Camunda` y `Implementacion/SAGI`: contienen subcarpetas `Temporal downloads` y los consolidados diarios renombrados por `DownloadedFilesManager`.
-- `Implementacion/Facturas`: guarda los excels consolidados `YYYY-MM-DD-HHh_PAQS_*.xlsx` creados por `FACTURAS` junto al inventario `xmls_extraidos.xlsx`.
-- `Implementacion/Estatus SAT`: almacena los PDF descargados y `estatus_facturas.xlsx` generado al leer los acuses.
-- `Implementacion/Integracion`: recibe el libro `YYYY-MM-DD HHh_integracion.xlsx` con pestanas `order_df`, `invoice_df`, `accounts_df`, `logistic_df`.
-- `sql_queries/`: opcional, coloca `.sql` para que el menu ejecute consultas posteriores a la carga.
+- Python 3.13+ (`uv`)
+- AWS CLI authenticated (account `747289880051`), region `us-east-1`
+- Terraform >= 1.5 (recommended for bucket recreate; Snowflake IAM can fall back to AWS CLI)
+- SnowSQL (`brew install --cask snowflake-snowsql`)
+  - Connection in `~/.snowsql/config` (e.g. `eseotres`, JWT key-pair)
+  - Needs `ACCOUNTADMIN` (storage integration) and `SYSADMIN` (stage)
 
-## Ejecucion del flujo
-Lanza `python main.py` y utiliza el menu interactivo:
-1. Descargar `CAMUNDA`: abre la sesion definida y permite al usuario filtrar antes de fusionar los descargables.
-2. Descargar `SAGI`: replica el proceso y llama a `export_results` para recorrer todas las paginas.
-3. Cargar `PAQS_INSABI`: consolida catalogos internos y cruza XML/PDF.
-4. Integrar informacion: toma los archivos mas recientes de ordenes, facturas, tesoreria y logistica para generar el libro de integracion.
-5. Actualizar SQL: valida columnas, convierte fechas y reemplaza `eseotres_warehouse.altas_historicas`.
-6. Ejecutar consultas SQL: recorre `sql_queries/*.sql` y muestra resultados o mensajes.
-7. Inteligencia de negocios: descarga la tabla historica y construye reportes comparativos PTYCSA vs CPI.
-`auto`: intenta disparar todo el flujo de manera encadenada.
-`0`: salir.
+## Recreate everything (S3 + Snowflake stage)
 
-Cada opcion reaprovecha la informacion almacenada en `Implementacion`, por lo que es importante revisar que las carpetas esten limpias antes de iniciar una nueva corrida diaria.
+One command after a loss / new account / new prefix:
 
-## Detalle de las etapas
-### Extraccion
-- `orders_management` se apoya en Selenium para seguir los pasos definidos en `config.yaml`, controlar paginadores y guardar los Excel descargados.
-- `ACCOUNTS_MANAGEMENT` valida rangos de fechas de PREI, reintenta hasta completar los archivos faltantes y documenta diferencias.
-- `FACTURAS` ingiere catalogos locales, extrae datos de XML y copia acuses SAT relevantes.
+```bash
+cp infra/infra.env.example infra/infra.env   # edit knobs (see below)
+./scripts/recreate_infra.sh
+```
 
-### Transformacion
-- `DownloadedFilesManager` agrupa archivos del mismo dia con encabezados identicos y crea un unico archivo timestamped por origen.
-- `DataIntegration` detecta el archivo mas reciente por prefijo `YYYY-MM-DD-HH`, calcula importes, cruza ordenes-facturas-estatus y deja cada conjunto en una hoja del libro final.
+That runs:
 
-### Carga y analitica
-- `SQL_CONNEXION_UPDATING` normaliza nombres de columnas, crea el esquema si no existe y ejecuta un reemplazo completo en la tabla destino.
-- `data_warehouse.Business_Intelligence` lee el historico, solicita fechas de comparacion y genera reportes (DOCX o CSV) con graficas y tablas de variacion.
+1. `./infra/apply.sh` — S3 bucket, source folders, Snowflake IAM role/policy  
+2. `./snowflake/setup_s3_stage.sh` — `STORAGE INTEGRATION` + IAM trust + stage + `LIST`
 
-## Consultas SQL posteriores
-Coloca scripts en `sql_queries/` para ejecutar cortes adicionales (por ejemplo, agregaciones o vistas materializadas). El menu notifica resultados y, si aplica, imprime totales agrupados.
+Or step-by-step:
 
-## Buenas practicas
-- Ejecuta el flujo en un ambiente virtual dedicado y versiona `config.yaml` solo en repositorios privados.
-- Revisa que Chrome for Testing y Chromedriver esten actualizados antes de correr Selenium.
-- Valida que los archivos en `Temporal downloads` correspondan al mismo dia; el administrador solo fusiona archivos con la fecha de creacion de hoy.
-- Respeta el formato `YYYY-MM-DD-HHh_ORIGEN.xlsx` si subes archivos manualmente al pipeline.
-- Antes de correr la opcion 5, confirma que el archivo de integracion contiene las columnas esperadas para evitar cargas incompletas.
+```bash
+./infra/apply.sh              # plan|apply|destroy
+./snowflake/setup_s3_stage.sh
+```
 
-## Soporte y extensiones
-El diseno modular permite:
-- Agregar nuevos origenes replicando el esquema de acciones en `config.yaml` y creando clases dedicadas.
-- Ajustar joins del integrador modificando `modules/data_integration.py` sin tocar el resto del flujo.
-- Automatizar reportes adicionales en `modules/data_warehouse.py` reutilizando la conexion existente a PostgreSQL.
+Verify:
 
-Cualquier cambio operativo deberia probarse primero en un entorno de pruebas, validando descargas y conciliaciones antes de impactar el historico principal.
+```bash
+snowsql -c eseotres -q "USE SCHEMA ESEOTRES_PHARMA.SRC_IMSS_BIENESTAR; LIST @eseotres_sources; LIST @eseotres_sources/camunda/;"
+```
+
+### Changing the S3 key prefix / bucket
+
+All infra names hang off `infra/infra.env` (gitignored). Start from the example:
+
+```bash
+cp infra/infra.env.example infra/infra.env
+```
+
+Important knobs:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `BUCKET_NAME` | `so3-data` | S3 bucket |
+| `ROOT_PREFIX` | `imss_bienestar` | Key prefix under the bucket (`s3://bucket/prefix/`) |
+| `SOURCE_FOLDERS` | `camunda,sagi,…` | Placeholder folders under the prefix |
+| `SNOWFLAKE_ROLE_NAME` | `snowflake-s3-imss-bienestar` | IAM role Snowflake assumes |
+| `INTEGRATION_NAME` | `s3_imss_bienestar` | Snowflake storage integration |
+| `STAGE_NAME` | `eseotres_sources` | Snowflake stage |
+| `SF_DATABASE` / `SF_SCHEMA` | `ESEOTRES_PHARMA` / `SRC_IMSS_BIENESTAR` | Target schema |
+| `SNOWSQL_CONN` | `eseotres` | SnowSQL `-c` connection name |
+
+After changing `ROOT_PREFIX` / `BUCKET_NAME`:
+
+1. Align Streamlit `imssb_files/config.yml` → `s3.bucket` and `s3.root_prefix`
+2. Re-run `./scripts/recreate_infra.sh`
+3. Re-upload or re-snapshot data into the new prefix
+
+One-off override without editing the file:
+
+```bash
+ROOT_PREFIX=imss_bienestar_dev ./scripts/recreate_infra.sh
+```
+
+## App setup
+
+```bash
+uv sync
+cp .env.example .env          # optional
+uv run streamlit run app.py
+```
+
+Tabs: **Paths** · **S3** · **Datasets** · **Camunda / SAGI**.
+
+## Project layout
+
+```
+scripts/recreate_infra.sh     # master: S3 + Snowflake stage
+infra/
+  apply.sh                    # terraform apply (bucket + IAM)
+  infra.env.example           # knobs (copy → infra.env)
+  main.tf / snowflake_iam.tf  # bucket + Snowflake IAM
+snowflake/
+  setup_s3_stage.sh           # integration + stage + LIST
+  create_*.sql                # SQL templates
+app.py                        # Streamlit dashboard
+imssb_files/                  # local data + config.yml (gitignored)
+modules/                      # extractors, S3, datasets, …
+```
+
+## Legacy CLI
+
+`main.py` still has the older interactive ETL menu. Prefer Streamlit for Excel → CSV → S3 and Camunda/SAGI web extract. Iceberg tables over the stage are next.

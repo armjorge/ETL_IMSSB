@@ -1,0 +1,19 @@
+-- =============================================================================
+-- SRC_IMSS_BIENESTAR — Snowflake access to S3 snapshots
+-- =============================================================================
+-- Preferred recreate (AWS S3 + IAM + Snowflake integration + stage + LIST):
+--
+--   cp infra/infra.env.example infra/infra.env   # edit ROOT_PREFIX / names
+--   ./scripts/recreate_infra.sh
+--
+-- Pieces (also runnable alone):
+--   ./infra/apply.sh                 # S3 bucket + Snowflake IAM role
+--   ./snowflake/setup_s3_stage.sh    # storage integration + stage + LIST
+--
+-- SQL templates used by the setup script:
+--   create_storage_integration.sql
+--   create_stage_and_list.sql
+--
+-- Manual auth alternate (interactive credentials / existing integration):
+--   ./snowflake/run_source_stage.sh
+-- =============================================================================
