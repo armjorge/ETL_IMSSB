@@ -14,17 +14,54 @@ def sanitize_prefix(value: str) -> str:
     return text
 
 
-def validate_prefix(prefix: str) -> tuple[bool, str]:
-    cleaned = (prefix or "").strip()
+def validate_folder(folder: str) -> tuple[bool, str]:
+    cleaned = (folder or "").strip()
     if not cleaned:
-        return False, "Prefix is required (used as subfolder name)."
+        return False, "Upload folder is required (used as subfolder name)."
     if cleaned != cleaned.lower() or " " in cleaned or not PREFIX_PATTERN.match(cleaned):
         suggestion = sanitize_prefix(cleaned)
         return False, (
-            "Prefix must be a simple subfolder name: lowercase letters, numbers, "
+            "Upload folder must be a simple subfolder name: lowercase letters, numbers, "
             f"`_` or `-` only (no spaces/special chars). Suggested: `{suggestion or 'payments'}`"
         )
-    return True, "Prefix OK — files go under `{MAIN_PATH}/imssb_files/{prefix}/`."
+    return True, "Folder OK — files go under `{MAIN_PATH}/imssb_files/{folder}/`."
+
+
+def validate_optional_prefix(prefix: str) -> tuple[bool, str]:
+    """Optional filename tag; empty/null is allowed."""
+    cleaned = (prefix or "").strip()
+    if not cleaned:
+        return True, "No filename prefix (optional)."
+    if cleaned != cleaned.lower() or " " in cleaned or not PREFIX_PATTERN.match(cleaned):
+        suggestion = sanitize_prefix(cleaned)
+        return False, (
+            "Prefix must be lowercase letters, numbers, `_` or `-` only "
+            f"(or leave empty). Suggested: `{suggestion or 'fantasmas'}`"
+        )
+    return True, "Prefix OK — included in snapshot filename."
+
+
+def validate_prefix(prefix: str) -> tuple[bool, str]:
+    """Back-compat alias: historically `prefix` meant the upload folder."""
+    return validate_folder(prefix)
+
+
+def resolve_folder_and_prefix(item: dict) -> tuple[str, str]:
+    """
+    folder = S3/local upload subfolder (required).
+    prefix = optional filename tag (may be empty).
+
+    Legacy configs only had `prefix` meaning the folder — migrate that when
+    `folder` is absent.
+    """
+    if not isinstance(item, dict):
+        return "", ""
+    if "folder" in item:
+        folder = (item.get("folder") or "").strip()
+        prefix = (item.get("prefix") or "").strip()
+        return folder, prefix
+    # Legacy: prefix was the upload folder; no filename tag.
+    return (item.get("prefix") or "").strip(), ""
 
 
 def new_dataset_id() -> str:
@@ -44,8 +81,9 @@ def to_source_entry(dataset: dict) -> dict:
 def normalize_datasets(datasets) -> list[dict]:
     """
     Normalize datasets to a list of:
-      {id, dataset_name, prefix, file_path, sheet, columns}
-    Accepts legacy dict keyed by slug.
+      {id, dataset_name, folder, prefix, file_path, sheet, columns}
+    `folder` = upload subfolder; `prefix` = optional filename tag.
+    Accepts legacy dict keyed by slug, and legacy `prefix`-as-folder.
     """
     if not datasets:
         return []
@@ -55,10 +93,12 @@ def normalize_datasets(datasets) -> list[dict]:
         for item in datasets:
             if not isinstance(item, dict):
                 continue
+            folder, prefix = resolve_folder_and_prefix(item)
             ds = {
                 "id": item.get("id") or new_dataset_id(),
                 "dataset_name": item.get("dataset_name") or item.get("name") or "dataset",
-                "prefix": item.get("prefix") or "",
+                "folder": folder,
+                "prefix": prefix,
                 "file_path": item.get("file_path") or "",
                 "sheet": item.get("sheet") or "",
                 "columns": list(item.get("columns") or item.get("rows") or []),
@@ -70,11 +110,13 @@ def normalize_datasets(datasets) -> list[dict]:
         normalized = []
         for slug, item in datasets.items():
             item = item or {}
+            folder, prefix = resolve_folder_and_prefix(item)
             normalized.append(
                 {
                     "id": item.get("id") or slug or new_dataset_id(),
                     "dataset_name": item.get("dataset_name") or slug,
-                    "prefix": item.get("prefix") or "",
+                    "folder": folder,
+                    "prefix": prefix,
                     "file_path": item.get("file_path") or "",
                     "sheet": item.get("sheet") or "",
                     "columns": list(item.get("columns") or item.get("rows") or []),
@@ -106,7 +148,7 @@ def migrate_legacy_sections(config: dict) -> dict:
         ("PAQS_INSABI", "invoicing"),
         ("PAGOS_PAQ", "payments"),
     )
-    for section_key, default_prefix in legacy_map:
+    for section_key, default_folder in legacy_map:
         section = cfg.get(section_key) or {}
         if not isinstance(section, dict):
             continue
@@ -116,7 +158,8 @@ def migrate_legacy_sections(config: dict) -> dict:
                 {
                     "id": new_dataset_id(),
                     "dataset_name": name,
-                    "prefix": default_prefix,
+                    "folder": default_folder,
+                    "prefix": "",
                     "file_path": entry.get("file_path", ""),
                     "sheet": entry.get("sheet", ""),
                     "columns": list(entry.get("rows") or entry.get("columns") or []),

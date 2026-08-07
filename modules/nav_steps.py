@@ -11,27 +11,31 @@ def build_camunda_actions(url: str, user: str, password: str) -> dict:
     """
     return {
         url: [
-            {
-                "type": "click",
-                "by": "XPATH",
-                "locator": '//*[@id="home"]/div/div[2]/div/div/a[1]',
-            },
+            # {
+            #     "type": "click",
+            #     "by": "XPATH",
+            #     "locator": '//*[@id="home"]/div/div[2]/div/div/a[1]',
+            # },
             {
                 "type": "send_keys",
                 "by": "XPATH",
-                "locator": '//*[@id="frmLogin:txtCorreo"]',
+                "locator": '/html/body/div[2]/div/div/form/input[1]',
                 "value": user,
             },
             {
                 "type": "send_keys",
                 "by": "XPATH",
-                "locator": '//*[@id="frmLogin:txtPassword"]',
+                "locator": '/html/body/div[2]/div/div/form/input[2]',
                 "value": password,
+            },
+            {
+                "type": "sleep",
+                "value": 1.5,
             },
             {
                 "type": "click",
                 "by": "XPATH",
-                "locator": '//*[@id="frmLogin:btnIngresar"]',
+                "locator": '/html/body/div[2]/div/div/form/button',
             },
             {
                 "type": "wait_user",

@@ -20,3 +20,18 @@ output "source_prefixes" {
     "s3://${aws_s3_bucket.data.bucket}/${var.root_prefix}/${folder}/"
   ]
 }
+
+output "snowflake_iam_role_arn" {
+  description = "IAM role ARN for Snowflake STORAGE_AWS_ROLE_ARN (empty if disabled)"
+  value       = try(aws_iam_role.snowflake[0].arn, "")
+}
+
+output "snowflake_iam_role_name" {
+  description = "IAM role name for Snowflake"
+  value       = try(aws_iam_role.snowflake[0].name, "")
+}
+
+output "s3_stage_url" {
+  description = "S3 URL to use on the Snowflake external stage"
+  value       = "s3://${aws_s3_bucket.data.bucket}/${var.root_prefix}/"
+}

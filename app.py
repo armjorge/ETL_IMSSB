@@ -12,7 +12,8 @@ from modules.datasets import (
     normalize_datasets,
     sanitize_prefix,
     to_source_entry,
-    validate_prefix,
+    validate_folder,
+    validate_optional_prefix,
 )
 from modules.s3_client import S3Client
 from modules.source_validation import SourceValidation, validate_source
@@ -66,6 +67,7 @@ def _seed_dataset_widgets(dataset: dict) -> None:
     ds_id = dataset["id"]
     defaults = {
         "name": dataset.get("dataset_name") or "",
+        "folder": dataset.get("folder") or "",
         "prefix": dataset.get("prefix") or "",
         "path": dataset.get("file_path") or "",
         "sheet": dataset.get("sheet") or "",
@@ -75,6 +77,19 @@ def _seed_dataset_widgets(dataset: dict) -> None:
         key = _widget_key(ds_id, field)
         if key not in st.session_state:
             st.session_state[key] = value
+    # Old UI stored the upload folder in the `prefix` widget; clear that if config
+    # now has folder set and an empty filename prefix.
+    folder_key = _widget_key(ds_id, "folder")
+    prefix_key = _widget_key(ds_id, "prefix")
+    cfg_folder = (dataset.get("folder") or "").strip()
+    cfg_prefix = (dataset.get("prefix") or "").strip()
+    if (
+        cfg_folder
+        and not cfg_prefix
+        and (st.session_state.get(prefix_key) or "").strip() == cfg_folder
+    ):
+        st.session_state[folder_key] = cfg_folder
+        st.session_state[prefix_key] = ""
 
 
 def _apply_pending_path(dataset_id: str) -> None:
@@ -91,12 +106,15 @@ def _queue_path(dataset_id: str, path: str) -> None:
 def _read_dataset_from_widgets(dataset_id: str) -> dict:
     columns_raw = st.session_state.get(_widget_key(dataset_id, "columns"), "")
     columns = [c.strip() for c in str(columns_raw).splitlines() if c.strip()]
-    prefix = sanitize_prefix(st.session_state.get(_widget_key(dataset_id, "prefix"), ""))
+    folder = sanitize_prefix(st.session_state.get(_widget_key(dataset_id, "folder"), ""))
+    prefix_raw = st.session_state.get(_widget_key(dataset_id, "prefix"), "")
+    prefix = sanitize_prefix(prefix_raw) if str(prefix_raw).strip() else ""
     path = st.session_state.get(_widget_key(dataset_id, "path"), "")
     resolved = ConfigManager.resolve_existing_path(path, PROJECT_ROOT)
     return {
         "id": dataset_id,
         "dataset_name": (st.session_state.get(_widget_key(dataset_id, "name"), "") or "").strip(),
+        "folder": folder,
         "prefix": prefix,
         "file_path": str(resolved) if resolved else ConfigManager.normalize_path(path),
         "sheet": (st.session_state.get(_widget_key(dataset_id, "sheet"), "") or "").strip(),
@@ -156,11 +174,11 @@ def _save_config(cfg_manager: ConfigManager, *, quiet: bool = False) -> Path:
     return path
 
 
-def _source_badge(validation: SourceValidation, prefix_ok: bool = True) -> str:
-    if validation.ok and prefix_ok:
+def _source_badge(validation: SourceValidation, folder_ok: bool = True) -> str:
+    if validation.ok and folder_ok:
         return "🟢 ready"
-    if not prefix_ok:
-        return "🔴 prefix"
+    if not folder_ok:
+        return "🔴 folder"
     if not validation.file_ok:
         return "🔴 file"
     if not validation.sheet_ok:
@@ -300,12 +318,20 @@ def _render_datasets(cfg_manager: ConfigManager) -> None:
                 placeholder="payments 2025-2026",
                 help="Editable label stored in config.yml (not a technical key).",
             )
-            new_prefix = st.text_input(
-                "Prefix (subfolder)",
+            new_folder = st.text_input(
+                "Upload folder",
                 placeholder="payments",
                 help=(
-                    "Subfolder under `{MAIN_PATH}/imssb_files/{prefix}/` and S3. "
+                    "Subfolder under `{MAIN_PATH}/imssb_files/{folder}/` and S3. "
                     "Lowercase letters, numbers, `_` or `-` only."
+                ),
+            )
+            new_prefix = st.text_input(
+                "Prefix (optional)",
+                placeholder="fantasmas",
+                help=(
+                    "Optional tag inserted in the snapshot filename. "
+                    "Leave empty for `{folder} dd-mm-yyyy hh mm.csv`."
                 ),
             )
             new_path = st.text_input("XLSX file path (Linux / synced cloud path)")
@@ -313,12 +339,16 @@ def _render_datasets(cfg_manager: ConfigManager) -> None:
             new_columns = st.text_area("Columns (one per line)", height=120)
             created = st.form_submit_button("Create dataset")
             if created:
-                prefix = sanitize_prefix(new_prefix) or sanitize_prefix(new_name)
-                ok, msg = validate_prefix(prefix)
+                folder = sanitize_prefix(new_folder) or sanitize_prefix(new_name)
+                prefix = sanitize_prefix(new_prefix) if new_prefix.strip() else ""
+                ok, msg = validate_folder(folder)
+                prefix_ok, prefix_msg = validate_optional_prefix(prefix)
                 if not new_name.strip():
                     st.error("Dataset name is required")
                 elif not ok:
                     st.error(msg)
+                elif not prefix_ok:
+                    st.error(prefix_msg)
                 else:
                     columns = [c.strip() for c in new_columns.splitlines() if c.strip()]
                     resolved = ConfigManager.resolve_existing_path(new_path, PROJECT_ROOT)
@@ -326,6 +356,7 @@ def _render_datasets(cfg_manager: ConfigManager) -> None:
                     dataset = {
                         "id": ds_id,
                         "dataset_name": new_name.strip(),
+                        "folder": folder,
                         "prefix": prefix,
                         "file_path": (
                             str(resolved) if resolved else ConfigManager.normalize_path(new_path)
@@ -336,7 +367,8 @@ def _render_datasets(cfg_manager: ConfigManager) -> None:
                     _upsert_dataset(dataset)
                     _seed_dataset_widgets(dataset)
                     _save_config(cfg_manager, quiet=True)
-                    st.success(f"Created `{dataset['dataset_name']}` (prefix `{prefix}`)")
+                    tag = f", prefix `{prefix}`" if prefix else ""
+                    st.success(f"Created `{dataset['dataset_name']}` (folder `{folder}`{tag})")
                     st.rerun()
 
     if not datasets:
@@ -354,32 +386,50 @@ def _render_datasets(cfg_manager: ConfigManager) -> None:
         # Read current widget values for validation/title (does not write other datasets)
         live = _read_dataset_from_widgets(ds_id)
         name = live["dataset_name"] or dataset.get("dataset_name") or ds_id
-        prefix_ok, _ = validate_prefix(live["prefix"])
+        folder_ok, _ = validate_folder(live["folder"])
+        prefix_ok, _ = validate_optional_prefix(live["prefix"])
         validation = validate_source(name, to_source_entry(live), PROJECT_ROOT)
+        folder_label = live["folder"] or dataset.get("folder") or "?"
+        prefix_label = live["prefix"] or dataset.get("prefix") or ""
+        title_extra = f" · `{prefix_label}`" if prefix_label else ""
 
         with st.expander(
-            f"{name}  ·  `{live['prefix'] or dataset.get('prefix')}/`  — "
-            f"{_source_badge(validation, prefix_ok)}",
+            f"{name}  ·  `{folder_label}/`{title_extra}  — "
+            f"{_source_badge(validation, folder_ok and prefix_ok)}",
             expanded=False,
         ):
             st.caption(f"Internal id: `{ds_id}` (stable; renaming the dataset does not change it)")
 
             st.text_input("Dataset name", key=_widget_key(ds_id, "name"))
             st.text_input(
-                "Prefix (subfolder)",
-                key=_widget_key(ds_id, "prefix"),
+                "Upload folder",
+                key=_widget_key(ds_id, "folder"),
                 help="Subfolder under imssb_files/ and S3. No spaces or special characters.",
             )
+            st.text_input(
+                "Prefix (optional)",
+                key=_widget_key(ds_id, "prefix"),
+                help=(
+                    "Optional filename tag. Empty → `{folder} dd-mm-yyyy hh mm.csv`. "
+                    "Filled → `{folder} {prefix} dd-mm-yyyy hh mm.csv`."
+                ),
+            )
 
-            live_prefix = sanitize_prefix(st.session_state.get(_widget_key(ds_id, "prefix"), ""))
-            live_ok, live_msg = validate_prefix(live_prefix)
+            live_folder = sanitize_prefix(st.session_state.get(_widget_key(ds_id, "folder"), ""))
+            live_prefix = sanitize_prefix(st.session_state.get(_widget_key(ds_id, "prefix"), "") or "")
+            if not str(st.session_state.get(_widget_key(ds_id, "prefix"), "")).strip():
+                live_prefix = ""
+            live_ok, live_msg = validate_folder(live_folder)
+            tag_ok, tag_msg = validate_optional_prefix(live_prefix)
             if live_ok:
                 st.caption(
-                    f"🟢 Snapshots → `{{MAIN_PATH}}/imssb_files/{live_prefix}/` and "
-                    f"`s3://…/{{root_prefix}}/{live_prefix}/`"
+                    f"🟢 Upload → `{{MAIN_PATH}}/imssb_files/{live_folder}/` and "
+                    f"`s3://…/{{root_prefix}}/{live_folder}/`"
                 )
             else:
                 st.error(live_msg)
+            if not tag_ok:
+                st.error(tag_msg)
 
             picked = _pick_or_upload_file(
                 _widget_key(ds_id, "picker"),
@@ -421,24 +471,32 @@ def _render_datasets(cfg_manager: ConfigManager) -> None:
                 live["dataset_name"] or ds_id, to_source_entry(live), PROJECT_ROOT
             )
             _render_source_validation(live_validation)
-            live_ready = live_validation.ok and validate_prefix(live["prefix"])[0]
+            live_ready = (
+                live_validation.ok
+                and validate_folder(live["folder"])[0]
+                and validate_optional_prefix(live["prefix"])[0]
+            )
             if live_ready:
                 ready_batch.append(live)
 
-            st.caption(
-                f"Snapshot file: `{live['prefix'] or 'prefix'} dd-mm-yyyy hh mm.csv` "
-                "(pipe `|`, all text)"
-            )
+            if live["prefix"]:
+                snap_name = f"`{live['folder'] or 'folder'} {live['prefix']} dd-mm-yyyy hh mm.csv`"
+            else:
+                snap_name = f"`{live['folder'] or 'folder'} dd-mm-yyyy hh mm.csv`"
+            st.caption(f"Snapshot file: {snap_name} (pipe `|`, all text)")
 
             col_save, col_snap, col_del = st.columns(3)
             with col_save:
                 if st.button("Save dataset", key=_widget_key(ds_id, "save")):
                     updated = _read_dataset_from_widgets(ds_id)
-                    ok, msg = validate_prefix(updated["prefix"])
+                    ok, msg = validate_folder(updated["folder"])
+                    tag_ok, tag_msg = validate_optional_prefix(updated["prefix"])
                     if not updated["dataset_name"]:
                         st.error("Dataset name is required")
                     elif not ok:
                         st.error(msg)
+                    elif not tag_ok:
+                        st.error(tag_msg)
                     else:
                         _upsert_dataset(updated)
                         _save_config(cfg_manager)
@@ -469,7 +527,10 @@ def _render_datasets(cfg_manager: ConfigManager) -> None:
                     st.rerun()
 
             if not live_ready:
-                st.info("Fix prefix / file / sheet / columns (all green) to enable **Take snapshot**.")
+                st.info(
+                    "Fix folder / prefix / file / sheet / columns (all green) "
+                    "to enable **Take snapshot**."
+                )
 
     st.divider()
     st.subheader("Batch snapshot")

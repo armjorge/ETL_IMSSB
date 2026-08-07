@@ -1,4 +1,14 @@
+# Prefer infra/infra.env + ./infra/apply.sh (or ./scripts/recreate_infra.sh).
+# This file is optional if you drive Terraform via apply.sh env vars.
+
 aws_region  = "us-east-1"
-# aws_profile = "default"   # optional; omit to use default credential chain
+# aws_profile = "default"
 bucket_name = "so3-data"
-root_prefix = "imss_bienestar"
+root_prefix = "imss_bienestar"   # change this to relocate all S3 keys
+
+enable_snowflake_s3_access = true
+# snowflake_role_name      = "snowflake-s3-imss-bienestar"
+# After setup_s3_stage.sh, values land in terraform.tfvars.snowflake (gitignored):
+# snowflake_iam_user_arn   = ""
+# snowflake_external_id    = "0000"
+

@@ -294,12 +294,69 @@ class WebAutomationDriver:
         return version, chrome_url, driver_url
 
     def _unzip(self, zip_path: Path, target_dir: Path) -> None:
+        """Extract zip and restore Unix modes (zipfile drops +x on helpers otherwise)."""
         with zipfile.ZipFile(zip_path, "r") as zf:
             zf.extractall(target_dir)
+            for info in zf.infolist():
+                if info.is_dir():
+                    continue
+                extracted = target_dir / info.filename
+                if not extracted.is_file():
+                    continue
+                mode = (info.external_attr >> 16) & 0o777
+                if mode:
+                    try:
+                        extracted.chmod(mode)
+                    except OSError:
+                        pass
 
     def _make_executable(self, path: Path) -> None:
         if path.exists() and self.system != "Windows":
             path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+    def _fix_cft_permissions(self, cft_platform: str) -> None:
+        """
+        Ensure CfT binaries are runnable after unzip.
+
+        On macOS, zipfile often leaves Helpers (chrome_crashpad_handler, helper
+        apps, app_mode_loader) without execute bits → Chrome dies with
+        'Permission denied' / 'Chrome instance exited'.
+        """
+        chrome_path, driver_path = self._paths_for(cft_platform)
+        self._make_executable(driver_path)
+        self._make_executable(chrome_path)
+
+        if not cft_platform.startswith("mac-") or not chrome_path.exists():
+            return
+
+        # .../Google Chrome for Testing.app
+        app = chrome_path.parents[2]
+        if not app.is_dir():
+            return
+
+        # Clear Gatekeeper quarantine if present (downloads from googleapis).
+        try:
+            subprocess.run(
+                ["xattr", "-cr", str(app), str(driver_path)],
+                check=False,
+                capture_output=True,
+            )
+        except OSError:
+            pass
+
+        for path in app.rglob("*"):
+            if not path.is_file():
+                continue
+            name = path.name
+            parent = path.parent.name
+            if (
+                name == "Google Chrome for Testing"
+                or name.startswith("chrome_crashpad_handler")
+                or name in {"app_mode_loader", "web_app_shortcut_copier"}
+                or parent == "MacOS"
+                or parent == "Helpers"
+            ):
+                self._make_executable(path)
 
     def install_chrome(self, cft_platform: str | None = None) -> dict:
         """Download and install Chrome for Testing + ChromeDriver into web_driver_root."""
@@ -333,9 +390,7 @@ class WebAutomationDriver:
         self._unzip(driver_zip, self.web_driver_root)
 
         self._set_chrome_paths(key)
-        chrome_path, driver_path = self._paths_for(key)
-        self._make_executable(driver_path)
-        self._make_executable(chrome_path)
+        self._fix_cft_permissions(key)
 
         status = self.status(key)
         ready = status["chrome_found"] and status["chromedriver_found"]
@@ -361,6 +416,8 @@ class WebAutomationDriver:
         installed = self.detect_installed_cft_platform()
         if installed:
             self._set_chrome_paths(installed)
+            # Repair +x on helpers left non-executable by a prior unzip.
+            self._fix_cft_permissions(installed)
         if self._check_chrome_installation():
             return True
         # Don't keep re-downloading x86 linux64 on ARM — it will never run here.

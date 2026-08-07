@@ -8,7 +8,13 @@ from pathlib import Path
 import pandas as pd
 
 from modules.config import ConfigManager
-from modules.datasets import find_dataset, normalize_datasets, to_source_entry, validate_prefix
+from modules.datasets import (
+    find_dataset,
+    normalize_datasets,
+    to_source_entry,
+    validate_folder,
+    validate_optional_prefix,
+)
 from modules.helpers import HELPERS
 from modules.s3_client import S3Client
 from modules.source_validation import validate_source
@@ -77,9 +83,13 @@ class XlsxExtractor:
         # dd-mm-yyyy hh mm  (spaces, as requested)
         return datetime.now().strftime("%d-%m-%Y %H %M")
 
-    def _dataset_output_path(self, prefix: str) -> Path:
-        filename = f"{prefix} {self._timestamp()}.csv"
-        out_dir = self.main_path / "imssb_files" / prefix
+    def _dataset_output_path(self, folder: str, prefix: str = "") -> Path:
+        stamp = self._timestamp()
+        if prefix:
+            filename = f"{folder} {prefix} {stamp}.csv"
+        else:
+            filename = f"{folder} {stamp}.csv"
+        out_dir = self.main_path / "imssb_files" / folder
         out_dir.mkdir(parents=True, exist_ok=True)
         return out_dir / filename
 
@@ -107,8 +117,12 @@ class XlsxExtractor:
             )
 
         dataset_name = dataset.get("dataset_name") or dataset_id
+        folder = (dataset.get("folder") or "").strip()
         prefix = (dataset.get("prefix") or "").strip()
-        prefix_ok, prefix_msg = validate_prefix(prefix)
+        folder_ok, folder_msg = validate_folder(folder)
+        if not folder_ok:
+            return ExtractResult(source=dataset_name, ok=False, message=folder_msg)
+        prefix_ok, prefix_msg = validate_optional_prefix(prefix)
         if not prefix_ok:
             return ExtractResult(source=dataset_name, ok=False, message=prefix_msg)
 
@@ -134,7 +148,9 @@ class XlsxExtractor:
                     message="Snapshot produced an empty result",
                 )
 
-            local_path = self._write_clean_pipe_csv(df, self._dataset_output_path(prefix))
+            local_path = self._write_clean_pipe_csv(
+                df, self._dataset_output_path(folder, prefix)
+            )
             s3_uri = None
             if upload:
                 if not self.s3.bucket_exists():
@@ -148,7 +164,7 @@ class XlsxExtractor:
                         local_path=str(local_path),
                         rows=len(df),
                     )
-                s3_uri = self.s3.upload_file(local_path, prefix)
+                s3_uri = self.s3.upload_file(local_path, folder)
 
             return ExtractResult(
                 source=dataset_name,

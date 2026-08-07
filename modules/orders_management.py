@@ -54,7 +54,9 @@ class orders_management:
         # Verificar archivos existentes
         existing_files = {}
         for downloaded_set in ["2023-2024", "2024"]:
-            output_file_name = os.path.join(download_directory, f"{today_yyyy_mm_dd_hh} SAGI_{downloaded_set}.xlsx")
+            output_file_name = os.path.join(
+                download_directory, f"{today_yyyy_mm_dd_hh} SAGI_{downloaded_set}.csv"
+            )
             if os.path.exists(output_file_name):
                 print(f"El archivo para el data_set {downloaded_set} de hoy {today_yyyy_mm_dd_hh} ya existe, omitiendo")
                 existing_files[downloaded_set] = True
@@ -197,8 +199,17 @@ class orders_management:
         for downloaded_set, output_data in [("2023-2024", data_2023_2024), ("2024", data_2024)]:
             if output_data:
                 final_output_df = pd.concat(output_data, ignore_index=True)
-                output_file_name = os.path.join(download_directory, f"{today_yyyy_mm_dd_hh} SAGI_{downloaded_set}.xlsx")
-                final_output_df.to_excel(output_file_name, index=False)
+                output_file_name = os.path.join(
+                    download_directory, f"{today_yyyy_mm_dd_hh} SAGI_{downloaded_set}.csv"
+                )
+                # As-is pipe CSV — no cleaning / type transforms
+                final_output_df.to_csv(
+                    output_file_name,
+                    sep="|",
+                    index=False,
+                    encoding="utf-8",
+                    lineterminator="\n",
+                )
                 print(f"✅ Data for {downloaded_set} saved to {output_file_name}")
                 
                 # Comparar con páginas previas
@@ -440,6 +451,11 @@ class orders_management:
             except EOFError:
                 # Non-interactive (e.g. some Streamlit contexts): fall back to downloads wait
                 return self._wait_for_downloads(timeout_seconds=1800, poll_seconds=5)
+        if step_type == "sleep":
+            seconds = float(step.get("value", step.get("seconds", 1)))
+            print(f"    ⏳ Esperando {seconds}s…")
+            time.sleep(seconds)
+            return True
         # Paso para llamar a la función. 
         elif step_type == "call_function":
             function_name = step.get("function")

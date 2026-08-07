@@ -155,6 +155,8 @@ infra/.terraform/
 infra/*.tfstate
 infra/*.tfstate.*
 infra/terraform.tfvars
+infra/infra.env
+infra/terraform.tfvars.snowflake
 
 # Local tooling binaries
 .tools/

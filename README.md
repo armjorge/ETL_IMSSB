@@ -1,140 +1,124 @@
 ﻿# ETL IMSSB
 
-Extract configured Excel sources to dated CSV files and upload them to S3. Configuration is managed from a Streamlit dashboard.
+Extract configured Excel / web sources to dated files, upload them to S3, and expose that S3 prefix to Snowflake via an external stage.
 
 ## What this phase does
 
-Streamlit dashboard to configure **dataset schemas** and take clean CSV snapshots into S3.
+Streamlit dashboard to configure **dataset schemas**, take clean CSV snapshots into S3, and run Camunda/SAGI browser extracts.
 
 Each dataset has:
 
 - `dataset_name` — human label (editable)
-- `prefix` — subfolder name (lowercase, no spaces/special chars)
+- `folder` — S3/local upload subfolder (lowercase, no spaces/special chars)
+- `prefix` — optional filename tag (empty OK; e.g. `fantasmas`)
 - Excel `file_path` (often a synced cloud folder), `sheet`, `columns`
 
-**Take snapshot** (one dataset) or **Snapshot all ready** (all green datasets in order) writes:
+**Take snapshot** writes:
 
 ```text
-{MAIN_PATH}/imssb_files/{prefix}/{prefix} dd-mm-yyyy hh mm.csv
-s3://so3-data/imss_bienestar/{prefix}/
+{MAIN_PATH}/imssb_files/{folder}/{folder} [prefix] dd-mm-yyyy hh mm.csv
+s3://{bucket}/{root_prefix}/{folder}/
 ```
 
-CSV format: all text, pipe `|` separator, `"` / `'` removed (minimal cleanup only).
+Defaults: `bucket=so3-data`, `root_prefix=imss_bienestar`. CSV: all text, pipe `|` separator, minimal quote cleanup.
 
-`MAIN_PATH`, S3 settings, Camunda/SAGI credentials, and datasets all persist in `{MAIN_PATH}/imssb_files/config.yml` (gitignored). Camunda/SAGI extractors come in a later phase.
-
-S3 layout:
-
-```
-s3://so3-data/imss_bienestar/camunda/
-s3://so3-data/imss_bienestar/sagi/
-s3://so3-data/imss_bienestar/invoicing/
-s3://so3-data/imss_bienestar/payments/
-s3://so3-data/imss_bienestar/banking/
-s3://so3-data/imss_bienestar/institution_status/
-```
+Runtime config lives in `{MAIN_PATH}/imssb_files/config.yml` (gitignored).
 
 ## Prerequisites
 
-- Python 3.13+ (project uses `uv` / `.venv`)
-- AWS CLI authenticated with profile `default` (account `747289880051`), region `us-east-1`
-- Terraform >= 1.5 (for infrastructure; optional if you create the bucket from Streamlit)
+- Python 3.13+ (`uv`)
+- AWS CLI authenticated (account `747289880051`), region `us-east-1`
+- Terraform >= 1.5 (recommended for bucket recreate; Snowflake IAM can fall back to AWS CLI)
+- SnowSQL (`brew install --cask snowflake-snowsql`)
+  - Connection in `~/.snowsql/config` (e.g. `eseotres`, JWT key-pair)
+  - Needs `ACCOUNTADMIN` (storage integration) and `SYSADMIN` (stage)
 
-## 1. Install dependencies
+## Recreate everything (S3 + Snowflake stage)
+
+One command after a loss / new account / new prefix:
 
 ```bash
-cd /path/to/ETL_IMSSB
+cp infra/infra.env.example infra/infra.env   # edit knobs (see below)
+./scripts/recreate_infra.sh
+```
+
+That runs:
+
+1. `./infra/apply.sh` — S3 bucket, source folders, Snowflake IAM role/policy  
+2. `./snowflake/setup_s3_stage.sh` — `STORAGE INTEGRATION` + IAM trust + stage + `LIST`
+
+Or step-by-step:
+
+```bash
+./infra/apply.sh              # plan|apply|destroy
+./snowflake/setup_s3_stage.sh
+```
+
+Verify:
+
+```bash
+snowsql -c eseotres -q "USE SCHEMA ESEOTRES_PHARMA.SRC_IMSS_BIENESTAR; LIST @eseotres_sources; LIST @eseotres_sources/camunda/;"
+```
+
+### Changing the S3 key prefix / bucket
+
+All infra names hang off `infra/infra.env` (gitignored). Start from the example:
+
+```bash
+cp infra/infra.env.example infra/infra.env
+```
+
+Important knobs:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `BUCKET_NAME` | `so3-data` | S3 bucket |
+| `ROOT_PREFIX` | `imss_bienestar` | Key prefix under the bucket (`s3://bucket/prefix/`) |
+| `SOURCE_FOLDERS` | `camunda,sagi,…` | Placeholder folders under the prefix |
+| `SNOWFLAKE_ROLE_NAME` | `snowflake-s3-imss-bienestar` | IAM role Snowflake assumes |
+| `INTEGRATION_NAME` | `s3_imss_bienestar` | Snowflake storage integration |
+| `STAGE_NAME` | `eseotres_sources` | Snowflake stage |
+| `SF_DATABASE` / `SF_SCHEMA` | `ESEOTRES_PHARMA` / `SRC_IMSS_BIENESTAR` | Target schema |
+| `SNOWSQL_CONN` | `eseotres` | SnowSQL `-c` connection name |
+
+After changing `ROOT_PREFIX` / `BUCKET_NAME`:
+
+1. Align Streamlit `imssb_files/config.yml` → `s3.bucket` and `s3.root_prefix`
+2. Re-run `./scripts/recreate_infra.sh`
+3. Re-upload or re-snapshot data into the new prefix
+
+One-off override without editing the file:
+
+```bash
+ROOT_PREFIX=imss_bienestar_dev ./scripts/recreate_infra.sh
+```
+
+## App setup
+
+```bash
 uv sync
-# or: python -m venv .venv && source .venv/bin/activate && pip install -e .
-```
-
-## 2. Create the S3 bucket (Terraform)
-
-If you authenticate with `aws login`, export credentials for Terraform first (the AWS provider does not always pick up login sessions):
-
-```bash
-eval "$(aws configure export-credentials --format env)"
-```
-
-Then:
-
-```bash
-cd infra
-cp terraform.tfvars.example terraform.tfvars   # edit if needed
-terraform init
-terraform plan
-terraform apply
-```
-
-Defaults:
-
-- Bucket: `so3-data`
-- Region: `us-east-1`
-- Root prefix: `imss_bienestar`
-- Credential chain: env vars / shared AWS config (optional `aws_profile` in tfvars)
-
-Outputs include `bucket_name`, `bucket_arn`, `root_prefix`, and the source prefix URIs.
-
-Alternatively, open the Streamlit **S3** tab, set the bucket name, and click **Create bucket if missing**.
-
-## 3. Local config
-
-Runtime config is stored at:
-
-```text
-{MAIN_PATH}/imssb_files/config.yml
-```
-
-With default `MAIN_PATH=.` that is `imssb_files/config.yml` (the whole `imssb_files/` folder is gitignored).
-
-On first run the dashboard creates it from `config.example.yaml` (or migrates an old root `config.yaml` if present). **Paths → Save paths** stores `MAIN_PATH` in that same file; dataset create/save/snapshot also auto-saves so Streamlit reloads keep your setup.
-
-Optional env overrides (`.env`):
-
-```bash
-cp .env.example .env
-# AWS_REGION=us-east-1
-# AWS_PROFILE=default
-# MAIN_PATH=.
-```
-
-## 4. Run the Streamlit dashboard
-
-```bash
+cp .env.example .env          # optional
 uv run streamlit run app.py
-# or: .venv/bin/streamlit run app.py
 ```
 
-Dashboard tabs:
+Tabs: **Paths** · **S3** · **Datasets** · **Camunda / SAGI**.
 
-1. **Paths** — set and save `MAIN_PATH` (persisted in `config.yml`).
-2. **S3** — link an existing bucket or create one if missing.
-3. **Datasets** — create/edit schemas; green validation for file/sheet/columns; **Take snapshot** per dataset or **Snapshot all ready** for every green dataset in order.
-4. **Camunda / SAGI** — Chromium status (green/gray) + install into `{MAIN_PATH}/imssb_files/web_driver/`; save URL/user/password (user/password obfuscated in `config.yml`). Extraction wired next.
-
-Snapshot example:
+## Project layout
 
 ```
-{MAIN_PATH}/imssb_files/payments/payments 06-08-2026 18 30.csv
-s3://so3-data/imss_bienestar/payments/payments 06-08-2026 18 30.csv
-```
-
-## Project layout (relevant)
-
-```
-app.py                      # Streamlit dashboard
-config.example.yaml         # Template (safe to commit)
-imssb_files/                # Local data + config.yml (gitignored)
-infra/                      # Terraform for so3-data
-modules/config.py           # Load/save config.yml under MAIN_PATH
-modules/datasets.py         # Dataset schema helpers
-modules/source_validation.py
-modules/s3_client.py
-modules/xlsx_extract.py     # Snapshot → pipe CSV → S3
-modules/helpers.py          # load_and_concat (reused)
-main.py                     # Legacy full ETL CLI
+scripts/recreate_infra.sh     # master: S3 + Snowflake stage
+infra/
+  apply.sh                    # terraform apply (bucket + IAM)
+  infra.env.example           # knobs (copy → infra.env)
+  main.tf / snowflake_iam.tf  # bucket + Snowflake IAM
+snowflake/
+  setup_s3_stage.sh           # integration + stage + LIST
+  create_*.sql                # SQL templates
+app.py                        # Streamlit dashboard
+imssb_files/                  # local data + config.yml (gitignored)
+modules/                      # extractors, S3, datasets, …
 ```
 
 ## Legacy CLI
 
-`main.py` still contains the older interactive ETL menu (Camunda/SAGI Selenium downloads, SQL load, BI). Prefer the Streamlit dataset snapshot path for Excel → CSV → S3. Orchestration of remaining sources comes later.
+`main.py` still has the older interactive ETL menu. Prefer Streamlit for Excel → CSV → S3 and Camunda/SAGI web extract. Iceberg tables over the stage are next.
