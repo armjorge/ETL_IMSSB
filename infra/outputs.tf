@@ -35,3 +35,16 @@ output "s3_stage_url" {
   description = "S3 URL to use on the Snowflake external stage"
   value       = "s3://${aws_s3_bucket.data.bucket}/${var.root_prefix}/"
 }
+
+output "snowpipe_folders" {
+  description = "Map of S3 folder → Iceberg table for Snowpipe"
+  value       = var.enable_snowpipe_sns ? var.snowpipe_folders : {}
+}
+
+output "snowpipe_sns_topic_arns" {
+  description = "Map of S3 folder → SNS topic ARN for CREATE PIPE AWS_SNS_TOPIC"
+  value = {
+    for folder, topic in aws_sns_topic.snowpipe :
+    folder => topic.arn
+  }
+}

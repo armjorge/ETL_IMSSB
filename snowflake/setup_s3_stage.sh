@@ -162,21 +162,83 @@ EOF
   rm -f "$trust_file" "$policy_file"
 }
 
+# Optional extra ExternalIds (comma-separated), e.g. Iceberg external volume:
+#   SNOWFLAKE_EXTRA_EXTERNAL_IDS='UJ94228_SFCRole=4_…'
+# Also preserved from an existing infra/terraform.tfvars.snowflake when present.
 update_iam_trust() {
   local iam_user_arn="$1" external_id="$2"
-  local trust_file
+  local trust_file extra_ids_hcl="" extra_csv="${SNOWFLAKE_EXTRA_EXTERNAL_IDS:-}"
+  local -a extra_ids=()
+
+  # Preserve extras already written by a previous Iceberg trust update
+  if [[ -f "$TFVARS_SNOW" ]]; then
+    local from_file
+    from_file="$(python3 -c '
+import re, sys
+text = open(sys.argv[1]).read()
+m = re.search(r"snowflake_external_ids\s*=\s*\[(.*?)\]", text, re.S)
+if not m:
+    sys.exit(0)
+print(",".join(re.findall(r"\"([^\"]+)\"", m.group(1))))
+' "$TFVARS_SNOW" 2>/dev/null || true)"
+    if [[ -n "$from_file" ]]; then
+      [[ -n "$extra_csv" ]] && extra_csv="${extra_csv},${from_file}" || extra_csv="$from_file"
+    fi
+  fi
+
+  if [[ -n "$extra_csv" ]]; then
+    local IFS=','
+    # shellcheck disable=SC2206
+    extra_ids=($extra_csv)
+  fi
+
+  # Dedupe while dropping the primary integration id if it appears in extras
+  local -a uniq_extras=()
+  local e
+  for e in "${extra_ids[@]}"; do
+    e="$(echo "$e" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    [[ -z "$e" || "$e" == "$external_id" ]] && continue
+    local seen=0 u
+    for u in "${uniq_extras[@]+"${uniq_extras[@]}"}"; do
+      [[ "$u" == "$e" ]] && { seen=1; break; }
+    done
+    [[ $seen -eq 0 ]] && uniq_extras+=("$e")
+  done
+
+  if ((${#uniq_extras[@]})); then
+    extra_ids_hcl="["
+    local first=1
+    for e in "${uniq_extras[@]}"; do
+      [[ $first -eq 1 ]] && first=0 || extra_ids_hcl+=", "
+      extra_ids_hcl+="\"${e}\""
+    done
+    extra_ids_hcl+="]"
+  else
+    extra_ids_hcl="[]"
+  fi
+
   trust_file="$(mktemp -t imssb_trust2.XXXXXX.json)"
-  cat > "$trust_file" <<EOF
-{
-  "Version": "2012-10-17",
-  "Statement": [{
+  python3 -c '
+import json, sys
+principal, primary, out = sys.argv[1], sys.argv[2], sys.argv[3]
+extras = sys.argv[4:]
+ids = [primary] + [e for e in extras if e and e != primary]
+seen, ordered = set(), []
+for i in ids:
+    if i not in seen:
+        seen.add(i)
+        ordered.append(i)
+stmts = [{
+    "Sid": f"SnowflakeAssume{n}",
     "Effect": "Allow",
-    "Principal": { "AWS": "${iam_user_arn}" },
+    "Principal": {"AWS": principal},
     "Action": "sts:AssumeRole",
-    "Condition": { "StringEquals": { "sts:ExternalId": "${external_id}" } }
-  }]
-}
-EOF
+    "Condition": {"StringEquals": {"sts:ExternalId": ext}},
+} for n, ext in enumerate(ordered)]
+with open(out, "w") as f:
+    json.dump({"Version": "2012-10-17", "Statement": stmts}, f, indent=2)
+print("Trust ExternalIds:", ", ".join(ordered), file=sys.stderr)
+' "$iam_user_arn" "$external_id" "$trust_file" "${uniq_extras[@]+"${uniq_extras[@]}"}"
 
   if command -v terraform >/dev/null 2>&1; then
     echo "→ Terraform: update IAM trust policy with Snowflake principal…"
@@ -185,6 +247,7 @@ EOF
 enable_snowflake_s3_access = true
 snowflake_iam_user_arn     = "${iam_user_arn}"
 snowflake_external_id      = "${external_id}"
+snowflake_external_ids     = ${extra_ids_hcl}
 EOF
     local apply_files=()
     [[ -f terraform.tfvars ]] && apply_files+=(-var-file=terraform.tfvars)

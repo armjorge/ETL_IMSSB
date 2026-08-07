@@ -11,4 +11,14 @@ enable_snowflake_s3_access = true
 # After setup_s3_stage.sh, values land in terraform.tfvars.snowflake (gitignored):
 # snowflake_iam_user_arn   = ""
 # snowflake_external_id    = "0000"
+# snowflake_external_ids   = []   # Iceberg external volume ExternalId(s)
+
+enable_snowpipe_sns = true
+# snowflake_aws_account_id = "974916068036"  # SNS:Subscribe principal
+# snowpipe_folders = {
+#   camunda   = "camunda_orders"
+#   payments  = "payments"
+#   invoicing = "invoicing"
+#   sagi      = "sagi"
+# }
 
