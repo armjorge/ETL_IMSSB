@@ -1,0 +1,30 @@
+MAIN_PATH: "."
+
+s3:
+  bucket: "so3-data"
+  root_prefix: "imss_bienestar"
+  region: "us-east-1"
+
+# List of independent upload schemas (each has a stable id).
+# Snapshot output:
+#   {MAIN_PATH}/imssb_files/{prefix}/{prefix} dd-mm-yyyy hh mm.csv
+datasets:
+  - id: "example001"
+    dataset_name: "payments 2025-2026"
+    prefix: "payments"
+    file_path: "/path/to/synced/cloud/folder/payments.xlsx"
+    sheet: "Sheet1"
+    columns:
+      - folio_fiscal
+      - referencia
+      - importe
+
+CAMUNDA:
+  url: "https://gestorinsumos.salud.gob.mx/camunda/app/tasklist/default/#/"
+  user: "your.user@example.com"
+  password: "CHANGE_ME"
+
+SAGI:
+  url: "https://sistemas.insabi.gob.mx/contratos/login"
+  user: "YOUR_USER"
+  password: "CHANGE_ME"

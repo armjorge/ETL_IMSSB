@@ -1,0 +1,4 @@
+aws_region  = "us-east-1"
+# aws_profile = "default"   # optional; omit to use default credential chain
+bucket_name = "so3-data"
+root_prefix = "imss_bienestar"
