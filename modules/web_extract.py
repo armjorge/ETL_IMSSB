@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import shutil
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from modules.config import ConfigManager
@@ -12,6 +12,7 @@ from modules.orders_management import orders_management
 from modules.s3_client import S3Client
 from modules.web_automation_driver import WebAutomationDriver
 
+GMT_MINUS_6 = timezone(timedelta(hours=-6))
 VALID_EXTENSIONS = {".csv", ".xlsx", ".xls"}
 
 
@@ -63,7 +64,10 @@ class WebExtractor:
         Move completed downloads into staging with a light timestamp rename.
         No content transformation — files kept as downloaded.
         """
-        stamp = datetime.now().strftime("%d-%m-%Y %H %M")
+        if prefix == "sagi":
+            stamp = datetime.now(GMT_MINUS_6).strftime("%Y-%m-%d %Hh %M")
+        else:
+            stamp = datetime.now().strftime("%d-%m-%Y %H %M")
         collected: list[Path] = []
         for src in sorted(download_dir.iterdir()):
             if not src.is_file():

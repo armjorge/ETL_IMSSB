@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from copy import deepcopy
 from pathlib import Path
 
@@ -15,7 +16,7 @@ from modules.datasets import (
     validate_folder,
     validate_optional_prefix,
 )
-from modules.s3_client import S3Client
+from modules.s3_client import S3Client, iter_local_extract_files
 from modules.source_validation import SourceValidation, validate_source
 from modules.web_automation_driver import WebAutomationDriver
 from modules.web_extract import WebExtractResult, WebExtractor
@@ -226,6 +227,63 @@ def _show_web_extract_result(result: WebExtractResult) -> None:
         st.write(f"Local: `{path}`")
     for uri in result.s3_uris:
         st.write(f"S3: `{uri}`")
+
+
+def _run_aws_login() -> None:
+    try:
+        completed = subprocess.run(["aws", "login"], timeout=600)
+    except FileNotFoundError:
+        st.error("AWS CLI not found. Install AWS CLI 2.32.0 or later.")
+        return
+    except subprocess.TimeoutExpired:
+        st.error("aws login timed out after 10 minutes.")
+        return
+    if completed.returncode == 0:
+        st.success("aws login finished. You can sync pending files.")
+    else:
+        st.error(f"aws login exited with code {completed.returncode}.")
+
+
+def _show_pending_sync_result() -> None:
+    result = st.session_state.get("last_s3_sync")
+    if not result:
+        return
+    if result.uploaded:
+        st.success(f"Uploaded {len(result.uploaded)} file(s).")
+        for uri in result.uploaded:
+            st.write(f"S3: `{uri}`")
+    elif result.local_files:
+        st.info("Nothing new to upload — those filenames already exist in S3.")
+    else:
+        st.info("No local extract files to sync.")
+    if result.skipped:
+        st.caption(f"Already in S3 (skipped): {len(result.skipped)}")
+
+
+def _render_aws_and_pending_sync(client: S3Client, imssb_dir: Path, key_prefix: str) -> None:
+    pending = iter_local_extract_files(imssb_dir)
+    with st.expander(f"Pending local extract files ({len(pending)})", expanded=key_prefix == "web"):
+        if not pending:
+            st.caption("No local csv/xlsx files under imssb_files/{folder}/.")
+        else:
+            for path, folder in pending:
+                st.write(f"`{folder}/` `{path.name}`")
+
+    col_login, col_sync = st.columns(2)
+    with col_login:
+        if st.button("AWS login", key=f"{key_prefix}_aws_login"):
+            with st.spinner("aws login — complete the browser sign-in…"):
+                _run_aws_login()
+    with col_sync:
+        if st.button("Sync pending files to S3", key=f"{key_prefix}_sync_pending"):
+            with st.spinner("Uploading local extract files that are not yet in S3…"):
+                try:
+                    st.session_state.last_s3_sync = client.sync_pending_files(imssb_dir)
+                    st.session_state.last_s3_sync_tab = key_prefix
+                except Exception as exc:
+                    st.error(str(exc))
+    if st.session_state.get("last_s3_sync_tab") == key_prefix:
+        _show_pending_sync_result()
 
 
 def _run_web_extract(source: str, upload: bool) -> WebExtractResult:
@@ -747,6 +805,20 @@ def main() -> None:
         except Exception as exc:
             st.error(f"Could not check S3 status: {exc}")
 
+        try:
+            ident = client.caller_identity()
+            st.caption(f"AWS identity: `{ident['arn']}`")
+        except Exception:
+            st.caption("AWS identity: not signed in, or credentials expired.")
+
+        st.subheader("Pending uploads")
+        st.caption(
+            "If an extract saved locally but S3 was unreachable, sign in then sync. "
+            "Files already present in S3 (same filename) are skipped."
+        )
+        imssb_dir = cfg_manager.resolve_main_path(st.session_state.config) / "imssb_files"
+        _render_aws_and_pending_sync(client, imssb_dir, "s3tab")
+
         col1, col2 = st.columns(2)
         with col1:
             if st.button("Save S3 settings"):
@@ -809,6 +881,20 @@ def main() -> None:
 
         if st.session_state.last_web_extract:
             _show_web_extract_result(st.session_state.last_web_extract)
+
+        st.divider()
+        st.subheader("If S3 upload failed")
+        st.caption(
+            "Sign in, then sync files already saved under imssb_files/{camunda|sagi}/."
+        )
+        s3_cfg = st.session_state.config.get("s3") or {}
+        pending_client = S3Client(
+            bucket=s3_cfg.get("bucket", "so3-data"),
+            root_prefix=s3_cfg.get("root_prefix", "imss_bienestar"),
+            region=s3_cfg.get("region", "us-east-1"),
+        )
+        imssb_dir = cfg_manager.resolve_main_path(st.session_state.config) / "imssb_files"
+        _render_aws_and_pending_sync(pending_client, imssb_dir, "web")
 
 
 if __name__ == "__main__":
